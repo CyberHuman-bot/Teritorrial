@@ -1,0 +1,6 @@
+{
+  "name": "Alpaca Shell",
+  "description": "AI-powered Alpaca Linux bootstrap terminal with voice input, real-time system monitoring, code generation & debugging, and cloud-synced user profiles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
