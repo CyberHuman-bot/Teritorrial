@@ -13,6 +13,9 @@ import com.example.data.model.UiState
 import com.example.data.repository.AiAssistantRepository
 import com.example.data.repository.AlpacaBootstrapEngine
 import com.example.data.repository.ProfileRepository
+import com.example.data.repository.SshConnectionState
+import com.example.data.repository.SshContainerConfig
+import com.example.data.repository.SshContainerSession
 import com.example.data.repository.SystemMonitorRepository
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
@@ -86,13 +89,16 @@ class TerminalMonitorViewModel(
                 initialValue = SystemMetricsSnapshot()
             )
 
+    private val sshSession = SshContainerSession()
+    val sshState: StateFlow<SshConnectionState> = sshSession.state
+
     private val _entries = MutableStateFlow(
         listOf(
             TerminalEntry(
                 id = entryIdGen.getAndIncrement(),
                 timestamp = nowStr(),
-                text = "Alpine Linux v3.21.3 RootFS Ready (musl/ash + POSIX)\n" +
-                    "Run 'apk update' to sync v3.21 repos, 'help' for tools, or tap Mic for voice.",
+                text = "Real Linux Shell Ready (${shellEngine.detectedShellBinary()})\n" +
+                    "Executing directly on device Linux kernel. Tap 'Container' above for SSH2 Alpine/Ubuntu/Docker PTY.",
                 type = EntryType.SYSTEM,
             )
         )
@@ -149,7 +155,13 @@ class TerminalMonitorViewModel(
                 }
         }
 
-        // Sync active profile shell into bootstrap engine & observe threshold breaches for proactive AI alerts
+        viewModelScope.launch {
+            sshSession.outputStream.collect { chunk ->
+                appendEntry(text = chunk, type = EntryType.OUTPUT)
+            }
+        }
+
+        // Sync active profile shell into engine & observe threshold breaches for proactive AI alerts
         viewModelScope.launch {
             activeProfile.collect { profile ->
                 if (profile != null) {
@@ -358,6 +370,45 @@ class TerminalMonitorViewModel(
         }
     }
 
+    fun connectContainer(config: SshContainerConfig) {
+        viewModelScope.launch {
+            appendEntry(
+                text = "Connecting SSH2 container PTY to ${config.displayTarget()}...",
+                type = EntryType.SYSTEM,
+            )
+            sshSession.connect(config).onSuccess {
+                appendEntry(
+                    text = "Connected to real Linux container ${config.displayTarget()} (interactive PTY active).",
+                    type = EntryType.SYSTEM,
+                )
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "SSH connection failed"
+                _statusBanner.value = msg
+                appendEntry(text = "SSH error: $msg", type = EntryType.ERROR, exitCode = 1)
+            }
+        }
+    }
+
+    fun disconnectContainer() {
+        sshSession.disconnect()
+        appendEntry(
+            text = "Switched back to Local Linux Kernel (${shellEngine.detectedShellBinary()}).",
+            type = EntryType.SYSTEM,
+        )
+    }
+
+    fun sendInterrupt() {
+        viewModelScope.launch {
+            if (sshSession.isConnected()) {
+                sshSession.sendInterrupt()
+                appendEntry(text = "^C (sent SIGINT to SSH container)", type = EntryType.SYSTEM)
+            } else {
+                shellEngine.interrupt()
+                appendEntry(text = "^C (reset local Linux shell session)", type = EntryType.SYSTEM)
+            }
+        }
+    }
+
     fun executeCommand(rawCommand: String = _inputText.value) {
         val command = rawCommand.trim()
         if (command.isEmpty()) return
@@ -367,7 +418,33 @@ class TerminalMonitorViewModel(
         suggestionDebounceJob?.cancel()
 
         val profile = activeProfile.value
-        val promptBase = profile?.promptSymbol ?: "alpine:~$"
+        val connectedSsh = sshState.value as? SshConnectionState.Connected
+
+        if (connectedSsh != null && sshSession.isConnected()) {
+            if (command == "clear") {
+                _entries.value = emptyList()
+                return
+            }
+            val sshPrompt = connectedSsh.config.displayTarget()
+            appendEntry(prompt = sshPrompt, text = command, type = EntryType.COMMAND)
+            viewModelScope.launch {
+                sshSession.sendCommand(command).onFailure { err ->
+                    appendEntry(
+                        text = err.localizedMessage ?: "Failed to send command to container.",
+                        type = EntryType.ERROR,
+                        exitCode = 1,
+                    )
+                }
+                lastExecutedCommand = command
+                if (profile != null && profile.id.isNotBlank()) {
+                    val nextHistory = (profile.commandHistory + command).takeLast(50)
+                    profileRepository.updateCommandHistory(currentUserId, profile.id, nextHistory)
+                }
+            }
+            return
+        }
+
+        val promptBase = profile?.promptSymbol ?: "linux:~$"
         val promptStr = "$promptBase [${_currentDirDisplay.value}]"
         appendEntry(prompt = promptStr, text = command, type = EntryType.COMMAND)
 
@@ -487,6 +564,12 @@ class TerminalMonitorViewModel(
     }
 
     private fun nowStr(): String = timeFmt.format(Date())
+
+    override fun onCleared() {
+        super.onCleared()
+        sshSession.disconnect()
+        shellEngine.interrupt()
+    }
 
     companion object {
         private const val TAG = "TerminalMonitorVM"

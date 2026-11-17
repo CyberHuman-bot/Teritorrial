@@ -108,6 +108,7 @@ import com.example.data.model.SystemMetricsSnapshot
 import com.example.data.model.TerminalEntry
 import com.example.data.model.TerminalProfile
 import com.example.data.model.UiState
+import com.example.data.repository.SshConnectionState
 import com.example.ui.theme.AmberAlert
 import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.CrimsonError
@@ -161,6 +162,9 @@ fun TerminalScreen(
     val voicePermissionDenied by viewModel.voicePermissionDenied.collectAsStateWithLifecycle()
     val voiceState by voiceController.voiceState.collectAsStateWithLifecycle()
     val voiceEngineMode by voiceController.engineMode.collectAsStateWithLifecycle()
+    val sshState by viewModel.sshState.collectAsStateWithLifecycle()
+
+    var showContainerSheet by remember { mutableStateOf(false) }
 
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -252,8 +256,10 @@ fun TerminalScreen(
             activeProfile = activeProfile,
             currentDir = currentDir,
             metrics = metrics,
+            sshState = sshState,
             isListening = voiceState is VoiceState.Listening,
             voiceReadoutEnabled = voiceReadoutEnabled,
+            onOpenContainerSheet = { showContainerSheet = true },
             onMicClick = {
                 if (voiceState is VoiceState.Listening) {
                     voiceController.stopListening()
@@ -405,9 +411,15 @@ fun TerminalScreen(
         HorizontalDivider(color = TermuxKeyBorder, thickness = 1.dp)
 
         // Termux Inline Prompt Input Bar (No Mic Button — Pure Terminal Input)
+        val connectedSsh = sshState as? SshConnectionState.Connected
+        val promptLabel = if (connectedSsh != null) {
+            "${connectedSsh.config.username} $"
+        } else {
+            buildTermuxPromptLabel(activeProfile?.promptSymbol, currentDir)
+        }
         TermuxPromptInputBar(
             textFieldValue = textFieldValue,
-            promptLabel = buildTermuxPromptLabel(activeProfile?.promptSymbol, currentDir),
+            promptLabel = promptLabel,
             isFocused = isInputFocused,
             focusRequester = focusRequester,
             onFocusChanged = { isInputFocused = it },
@@ -436,6 +448,10 @@ fun TerminalScreen(
                 }
                 focusTerminalInput()
             },
+            onInterrupt = {
+                viewModel.sendInterrupt()
+                focusTerminalInput()
+            },
             onHistoryUp = {
                 viewModel.cycleHistory(up = true)
                 focusTerminalInput()
@@ -448,6 +464,15 @@ fun TerminalScreen(
                 viewModel.executeCommand("clear")
                 focusTerminalInput()
             },
+        )
+    }
+
+    if (showContainerSheet) {
+        ContainerConnectSheet(
+            sshState = sshState,
+            onConnect = { cfg -> viewModel.connectContainer(cfg) },
+            onDisconnect = { viewModel.disconnectContainer() },
+            onDismiss = { showContainerSheet = false },
         )
     }
 }
@@ -466,13 +491,16 @@ private fun TerminalHeaderBar(
     activeProfile: TerminalProfile?,
     currentDir: String,
     metrics: SystemMetricsSnapshot,
+    sshState: SshConnectionState,
     isListening: Boolean,
     voiceReadoutEnabled: Boolean,
+    onOpenContainerSheet: () -> Unit,
     onMicClick: () -> Unit,
     onToggleVoiceReadout: () -> Unit,
     onClearTerminal: () -> Unit,
     onOpenMonitor: () -> Unit,
 ) {
+    val connectedSsh = sshState as? SshConnectionState.Connected
     Surface(
         color = Color(0xFF0A0D10),
         border = BorderStroke(1.dp, TermuxKeyBorder),
@@ -487,17 +515,21 @@ private fun TerminalHeaderBar(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${activeProfile?.name ?: "alpine"} (${activeProfile?.preferredShell ?: "/bin/ash"})",
+                    text = if (connectedSsh != null) {
+                        "SSH ${connectedSsh.config.displayTarget()}"
+                    } else {
+                        "${activeProfile?.name ?: "linux"} (/system/bin/sh)"
+                    },
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
                     ),
-                    color = TermuxPromptGreen,
+                    color = if (connectedSsh != null) CyanElectric else TermuxPromptGreen,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = currentDir,
+                    text = if (connectedSsh != null) "Live Container PTY" else currentDir,
                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     color = CyanElectric,
                     maxLines = 1,
@@ -507,8 +539,35 @@ private fun TerminalHeaderBar(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                Surface(
+                    color = if (connectedSsh != null) MintEmerald.copy(alpha = 0.16f) else TermuxKeyBg,
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (connectedSsh != null) MintEmerald.copy(alpha = 0.65f) else TermuxKeyBorder
+                    ),
+                    modifier = Modifier
+                        .heightIn(min = 36.dp)
+                        .clickable { onOpenContainerSheet() }
+                        .testTag("terminal_container_pill"),
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            text = if (connectedSsh != null) "SSH ON" else "Container",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = if (connectedSsh != null) MintEmerald else CyanElectric,
+                        )
+                    }
+                }
+
                 Surface(
                     color = TermuxKeyBg,
                     shape = RoundedCornerShape(6.dp),
@@ -519,17 +578,17 @@ private fun TerminalHeaderBar(
                         .testTag("terminal_telemetry_pill"),
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
                         Text(
-                            text = "CPU ${metrics.cpuPercent.toInt()}%",
+                            text = "${metrics.cpuPercent.toInt()}%",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = if (metrics.cpuPercent >= (activeProfile?.cpuAlertThreshold ?: 75L)) AmberAlert else CyanElectric,
                         )
                         Text(
-                            text = "MEM ${metrics.memPercent.toInt()}%",
+                            text = "${metrics.memPercent.toInt()}%M",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = if (metrics.memPercent >= (activeProfile?.memAlertThreshold ?: 80L)) AmberAlert else TermuxPromptGreen,
                         )
@@ -755,6 +814,7 @@ private fun TermuxPromptInputBar(
 private fun TermuxExtraKeysBar(
     onInsertToken: (String) -> Unit,
     onTabComplete: () -> Unit,
+    onInterrupt: () -> Unit,
     onHistoryUp: () -> Unit,
     onHistoryDown: () -> Unit,
     onClear: () -> Unit,
@@ -772,6 +832,7 @@ private fun TermuxExtraKeysBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
+            TermuxKeyButton(label = "CTRL+C", onClick = onInterrupt, testTag = "interrupt_ctrl_c_button")
             TermuxKeyButton(label = "TAB", onClick = onTabComplete)
             TermuxKeyButton(label = "↑", onClick = onHistoryUp, testTag = "history_up_button")
             TermuxKeyButton(label = "↓", onClick = onHistoryDown, testTag = "history_down_button")
@@ -783,7 +844,8 @@ private fun TermuxExtraKeysBar(
             TermuxKeyButton(label = ">", onClick = { onInsertToken(" > ") })
             TermuxKeyButton(label = "CTRL+L", onClick = onClear)
             TermuxKeyButton(label = "ls", onClick = { onInsertToken("ls -la") })
-            TermuxKeyButton(label = "apk", onClick = { onInsertToken("apk ") })
+            TermuxKeyButton(label = "ps", onClick = { onInsertToken("ps") })
+            TermuxKeyButton(label = "uname", onClick = { onInsertToken("uname -a") })
         }
     }
 }
@@ -1210,6 +1272,7 @@ private fun TermuxTerminalPreview() {
             TermuxExtraKeysBar(
                 onInsertToken = {},
                 onTabComplete = {},
+                onInterrupt = {},
                 onHistoryUp = {},
                 onHistoryDown = {},
                 onClear = {},
