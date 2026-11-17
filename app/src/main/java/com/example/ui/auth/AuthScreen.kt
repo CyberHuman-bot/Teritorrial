@@ -144,7 +144,7 @@ fun AuthScreen(
                         border = BorderStroke(1.dp, CyanElectric.copy(alpha = 0.5f)),
                     ) {
                         Text(
-                            text = "ALPACA v3.21",
+                            text = "ALPINE v3.21",
                             style = MaterialTheme.typography.labelMedium,
                             color = CyanElectric,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -175,7 +175,7 @@ fun AuthScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    text = "Bootstrap Linux terminal powered by real-time Gemini suggestions, voice-to-shell commands, live telemetry analysis, and synced profiles.",
+                    text = "Alpine Linux v3.21 terminal powered by real-time Gemini suggestions, voice-to-shell commands, live telemetry analysis, and synced profiles.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -194,8 +194,8 @@ fun AuthScreen(
                     FeatureRow(
                         icon = Icons.Rounded.Terminal,
                         tint = CyanElectric,
-                        title = "Alpaca Linux Bootstrap Shell",
-                        subtitle = "Stateful ash/sh/bash workspace, apk tools, pipes & scripts",
+                        title = "Alpine Linux v3.21 Shell & APK",
+                        subtitle = "Stateful ash/sh workspace, live APKINDEX, POSIX tools & scripts",
                     )
                     FeatureRow(
                         icon = Icons.Rounded.GraphicEq,

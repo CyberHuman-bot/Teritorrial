@@ -593,7 +593,7 @@ private fun ProfileEditorSheet(
     ) -> Unit,
 ) {
     var name by remember { mutableStateOf(existing?.name ?: "") }
-    var prompt by remember { mutableStateOf(existing?.promptSymbol ?: "alpaca:~$") }
+    var prompt by remember { mutableStateOf(existing?.promptSymbol ?: "alpine:~$") }
     var selectedShell by remember { mutableStateOf(existing?.preferredShell ?: ShellType.ASH.path) }
     var selectedModel by remember { mutableStateOf(existing?.aiModelName ?: AiModelOption.FLASH_38.modelId) }
     var temperature by remember { mutableFloatStateOf((existing?.aiTemperature ?: 0.4).toFloat()) }

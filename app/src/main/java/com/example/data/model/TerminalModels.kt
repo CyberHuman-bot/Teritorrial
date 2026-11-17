@@ -40,9 +40,9 @@ enum class AiModelOption(val modelId: String, val displayName: String, val summa
 data class TerminalProfile(
     @DocumentId val id: String = "",
     val userId: String = "",
-    val name: String = "Alpaca Core",
+    val name: String = "Alpine Core",
     val preferredShell: String = ShellType.ASH.path,
-    val promptSymbol: String = "alpaca:~$",
+    val promptSymbol: String = "alpine:~$",
     val aiModelName: String = AiModelOption.FLASH_38.modelId,
     val aiTemperature: Double = 0.4,
     val proactiveMonitoring: Boolean = true,

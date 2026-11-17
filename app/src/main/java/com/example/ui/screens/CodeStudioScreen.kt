@@ -539,7 +539,7 @@ private fun DebugTab(
     ) {
         if (workspaceFiles.isNotEmpty()) {
             Text(
-                text = "Load from Alpaca ~/scripts:",
+                text = "Load from Alpine ~/scripts:",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

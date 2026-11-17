@@ -487,7 +487,7 @@ private fun TerminalHeaderBar(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${activeProfile?.name ?: "alpaca"} (${activeProfile?.preferredShell ?: "/bin/ash"})",
+                    text = "${activeProfile?.name ?: "alpine"} (${activeProfile?.preferredShell ?: "/bin/ash"})",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
@@ -1193,7 +1193,7 @@ private fun TermuxTerminalPreview() {
                 entry = TerminalEntry(
                     id = 2L,
                     timestamp = "10:12:01",
-                    text = "Linux alpaca-bootstrap 6.1.0-android aarch64 GNU/Linux",
+                    text = "Linux alpine-android 6.1.0-android aarch64 Linux (Alpine 3.21.3)",
                     type = EntryType.OUTPUT,
                 )
             )

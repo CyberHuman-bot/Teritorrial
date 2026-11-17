@@ -94,7 +94,7 @@ fun MonitorScreen(
                     color = TextPrimary,
                 )
                 Text(
-                    text = "Live device & Alpaca rootfs telemetry • ${metrics.cpuCores} cores • uptime ${metrics.uptimeSeconds}s",
+                    text = "Live device & Alpine rootfs telemetry • ${metrics.cpuCores} cores • uptime ${metrics.uptimeSeconds}s",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

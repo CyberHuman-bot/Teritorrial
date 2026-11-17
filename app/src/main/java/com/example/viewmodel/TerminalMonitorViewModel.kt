@@ -91,8 +91,8 @@ class TerminalMonitorViewModel(
             TerminalEntry(
                 id = entryIdGen.getAndIncrement(),
                 timestamp = nowStr(),
-                text = "Alpaca Linux v3.21 Bootstrap RootFS Ready (musl/ash)\n" +
-                    "Type 'help' for shell builtins, 'apk info' for packages, or tap Mic for voice.",
+                text = "Alpine Linux v3.21.3 RootFS Ready (musl/ash + POSIX)\n" +
+                    "Run 'apk update' to sync v3.21 repos, 'help' for tools, or tap Mic for voice.",
                 type = EntryType.SYSTEM,
             )
         )
@@ -367,7 +367,7 @@ class TerminalMonitorViewModel(
         suggestionDebounceJob?.cancel()
 
         val profile = activeProfile.value
-        val promptBase = profile?.promptSymbol ?: "alpaca:~$"
+        val promptBase = profile?.promptSymbol ?: "alpine:~$"
         val promptStr = "$promptBase [${_currentDirDisplay.value}]"
         appendEntry(prompt = promptStr, text = command, type = EntryType.COMMAND)
 

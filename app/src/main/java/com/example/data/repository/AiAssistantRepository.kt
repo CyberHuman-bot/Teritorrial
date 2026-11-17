@@ -58,7 +58,7 @@ class AiAssistantRepository {
                     "suggestions" to Schema.array(
                         items = Schema.obj(
                             properties = mapOf(
-                                "command" to Schema.string("Executable Alpaca Linux shell command"),
+                                "command" to Schema.string("Executable Alpine Linux v3.21 shell command"),
                                 "title" to Schema.string("Short 2-5 word label"),
                                 "category" to Schema.enumeration(
                                     listOf("snippet", "optimization", "fix", "completion"),
@@ -75,7 +75,7 @@ class AiAssistantRepository {
                 modelName = modelName,
                 temperature = temperature.toFloat(),
                 schema = schema,
-                systemPrompt = "You are an Alpaca Linux (Alpine/BusyBox ash) terminal copilot. Suggest concise, accurate, safe shell commands and system optimization snippets."
+                systemPrompt = "You are an Alpine Linux v3.21 (musl/ash + POSIX) terminal copilot. Suggest concise, accurate, safe shell commands and system optimization snippets."
             )
 
             val prompt = buildString {
@@ -122,14 +122,14 @@ class AiAssistantRepository {
         return try {
             val schema = Schema.obj(
                 properties = mapOf(
-                    "command" to Schema.string("Single valid Alpaca Linux shell command"),
+                    "command" to Schema.string("Single valid Alpine Linux v3.21 shell command"),
                 )
             )
             val model = getStructuredModel(
                 modelName = modelName,
                 temperature = 0.2f,
                 schema = schema,
-                systemPrompt = "Convert natural language requests into a single executable Alpaca Linux ($preferredShell) command using standard POSIX/BusyBox/apk utilities. Return only the command."
+                systemPrompt = "Convert natural language requests into a single executable Alpine Linux v3.21 ($preferredShell) command using standard POSIX/BusyBox/apk utilities. Return only the command."
             )
             val response = withTimeout(30_000L) {
                 model.generateContent("CWD: $currentDir\nRequest: $spokenOrTypedIntent")
@@ -165,7 +165,7 @@ class AiAssistantRepository {
             val schema = Schema.obj(
                 properties = mapOf(
                     "transcript" to Schema.string("Exact verbatim transcription of the user's spoken audio"),
-                    "command" to Schema.string("Single valid executable Alpaca Linux shell command"),
+                    "command" to Schema.string("Single valid executable Alpine Linux v3.21 shell command"),
                     "explanation" to Schema.string("Brief 1-sentence summary of what the command does"),
                 )
             )
@@ -173,13 +173,13 @@ class AiAssistantRepository {
                 modelName = modelName,
                 temperature = 0.2f,
                 schema = schema,
-                systemPrompt = "You are a voice-driven Alpaca Linux ($preferredShell) terminal assistant. Transcribe the user's spoken audio accurately and map their intent to a single safe POSIX/BusyBox/apk shell command."
+                systemPrompt = "You are a voice-driven Alpine Linux v3.21 ($preferredShell) terminal assistant. Transcribe the user's spoken audio accurately and map their intent to a single safe POSIX/BusyBox/apk shell command."
             )
             val prompt = content {
                 inlineData(audioBytes, mimeType)
                 text(
                     "Current working directory: $currentDir. " +
-                        "Transcribe what was spoken and return the exact Alpaca Linux ($preferredShell) shell command."
+                        "Transcribe what was spoken and return the exact Alpine Linux v3.21 ($preferredShell) shell command."
                 )
             }
             val response = withTimeout(45_000L) {
@@ -280,7 +280,7 @@ class AiAssistantRepository {
                             properties = mapOf(
                                 "title" to Schema.string("Short optimization action title"),
                                 "impact" to Schema.string("Expected impact e.g. 'Reduces RAM pressure'"),
-                                "command" to Schema.string("Safe executable Alpaca Linux command"),
+                                "command" to Schema.string("Safe executable Alpine Linux command"),
                                 "rationale" to Schema.string("1-sentence technical explanation"),
                             )
                         ),
@@ -292,7 +292,7 @@ class AiAssistantRepository {
                 modelName = modelName,
                 temperature = temperature.toFloat(),
                 schema = schema,
-                systemPrompt = "You are a senior Linux kernel & Android systems performance engineer analyzing real-time Alpaca Linux bootstrap telemetry. Provide concrete, accurate bottleneck diagnostics and safe executable shell optimization/inspection commands."
+                systemPrompt = "You are a senior Linux kernel & Android systems performance engineer analyzing real-time Alpine Linux v3.21 rootfs telemetry. Provide concrete, accurate bottleneck diagnostics and safe executable shell optimization/inspection commands."
             )
             val prompt = buildString {
                 appendLine("Real-Time Telemetry Snapshot:")
@@ -362,7 +362,7 @@ class AiAssistantRepository {
                     "explanation" to Schema.string("Clear technical summary of how the script works"),
                     "apkDependencies" to Schema.array(
                         items = Schema.string(),
-                        description = "Optional Alpine/Alpaca apk packages needed"
+                        description = "Optional Alpine Linux v3.21 apk packages needed"
                     ),
                     "runCommand" to Schema.string("Exact command to execute this file inside ~/scripts/"),
                 )
@@ -371,7 +371,7 @@ class AiAssistantRepository {
                 modelName = modelName,
                 temperature = temperature.toFloat(),
                 schema = schema,
-                systemPrompt = "You are an expert Linux systems programmer targeting Alpaca Linux (musl, BusyBox ash, $preferredShell). Generate clean, idiomatic, production-safe scripts and snippets."
+                systemPrompt = "You are an expert Linux systems programmer targeting Alpine Linux v3.21 (musl, BusyBox ash, $preferredShell). Generate clean, idiomatic, production-safe scripts and snippets."
             )
             val response = withTimeout(60_000L) {
                 model.generateContent(
@@ -439,7 +439,7 @@ class AiAssistantRepository {
                 modelName = modelName,
                 temperature = temperature.toFloat(),
                 schema = schema,
-                systemPrompt = "You are an expert Linux/POSIX debugger and code reviewer for Alpaca Linux. Identify syntax, logic, security, and performance bugs accurately and provide a drop-in corrected implementation."
+                systemPrompt = "You are an expert Linux/POSIX debugger and code reviewer for Alpine Linux v3.21. Identify syntax, logic, security, and performance bugs accurately and provide a drop-in corrected implementation."
             )
             val prompt = buildString {
                 appendLine("Language: $language")

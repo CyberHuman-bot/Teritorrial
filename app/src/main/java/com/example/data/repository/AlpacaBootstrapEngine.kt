@@ -9,7 +9,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 data class ShellExecutionResult(
     val stdout: String,
@@ -23,37 +22,26 @@ class AlpacaBootstrapEngine(
     context: Context,
     private val systemMonitor: SystemMonitorRepository,
 ) {
-    private val rootDir = File(context.applicationContext.filesDir, "alpaca_rootfs")
-    private val homeVirtualPath = "/home/alpaca"
+    private val filesRoot = context.applicationContext.filesDir
+    private val rootDir = File(filesRoot, "alpine_rootfs")
+    private val legacyRootDir = File(filesRoot, "alpaca_rootfs")
+    private val homeVirtualPath = "/home/alpine"
     private var currentVirtualDir = homeVirtualPath
 
+    private val apkManager = AlpineApkManager(rootDir)
+    private val posixBridge = PosixShellBridge(rootDir, systemMonitor)
+
     private val envVars = linkedMapOf(
-        "USER" to "alpaca",
-        "LOGNAME" to "alpaca",
-        "HOME" to "/home/alpaca",
+        "USER" to "alpine",
+        "LOGNAME" to "alpine",
+        "HOME" to homeVirtualPath,
+        "PWD" to homeVirtualPath,
         "SHELL" to "/bin/ash",
         "TERM" to "xterm-256color",
-        "DISTRO" to "Alpaca Linux 3.21.0-bootstrap",
-        "PATH" to "/usr/local/bin:/usr/bin:/bin:/sbin",
+        "DISTRO" to "Alpine Linux ${AlpineApkManager.ALPINE_VERSION}",
+        "ARCH" to AlpineApkManager.detectAlpineArch(),
+        "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG" to "C.UTF-8",
-    )
-
-    private val apkRepositoryCatalog = mapOf(
-        "curl" to "8.11.1-r0 - URL retrieval utility and library",
-        "git" to "2.47.1-r0 - Distributed version control system",
-        "htop" to "3.3.0-r0 - Interactive process viewer",
-        "python3" to "3.12.8-r0 - High-level scripting language",
-        "jq" to "1.7.1-r0 - Lightweight command-line JSON processor",
-        "vim" to "9.1.0800-r0 - Improved vi text editor",
-        "bash" to "5.2.37-r0 - GNU Bourne Again SHell",
-        "zsh" to "5.9-r4 - Very advanced programmable command interpreter",
-        "gawk" to "5.3.1-r0 - GNU pattern scanning and processing language",
-        "sqlite" to "3.47.2-r0 - C library implementing an SQL database engine",
-        "openssh-client" to "9.9_p1-r2 - OpenBSD SSH client utilities",
-        "iperf3" to "3.17.1-r0 - Network bandwidth measurement tool",
-        "strace" to "6.12-r0 - System call tracer",
-        "tar" to "1.35-r2 - Utility used to store, backup, and transport files",
-        "musl-dev" to "1.2.5-r8 - musl C library development headers",
     )
 
     init {
@@ -65,11 +53,11 @@ class AlpacaBootstrapEngine(
     }
 
     fun currentDisplayDir(): String {
-        return if (currentVirtualDir == homeVirtualPath) "~"
-        else if (currentVirtualDir.startsWith("$homeVirtualPath/")) {
-            "~/" + currentVirtualDir.removePrefix("$homeVirtualPath/")
-        } else {
-            currentVirtualDir
+        return when {
+            currentVirtualDir == homeVirtualPath -> "~"
+            currentVirtualDir.startsWith("$homeVirtualPath/") ->
+                "~/" + currentVirtualDir.removePrefix("$homeVirtualPath/")
+            else -> currentVirtualDir
         }
     }
 
@@ -79,12 +67,12 @@ class AlpacaBootstrapEngine(
             val sanitized = filename.trim()
                 .replace(Regex("[^a-zA-Z0-9._-]"), "_")
                 .ifEmpty { "script.sh" }
-            val scriptsDir = resolveHostFile("/home/alpaca/scripts")
+            val scriptsDir = resolveHostFile("$homeVirtualPath/scripts")
             scriptsDir.mkdirs()
             val target = File(scriptsDir, sanitized)
             target.writeText(content)
             systemMonitor.recordWorkspaceIoBytes(content.toByteArray().size.toLong())
-            "/home/alpaca/scripts/$sanitized"
+            "$homeVirtualPath/scripts/$sanitized"
         }
 
     suspend fun readWorkspaceFile(virtualPath: String): String? =
@@ -103,8 +91,8 @@ class AlpacaBootstrapEngine(
     suspend fun listWorkspaceScripts(): List<String> =
         withContext(Dispatchers.IO) {
             bootstrapRootFsIfNeeded()
-            val scriptsDir = resolveHostFile("/home/alpaca/scripts")
-            scriptsDir.listFiles()?.map { "/home/alpaca/scripts/${it.name}" }?.sorted() ?: emptyList()
+            val scriptsDir = resolveHostFile("$homeVirtualPath/scripts")
+            scriptsDir.listFiles()?.map { "$homeVirtualPath/scripts/${it.name}" }?.sorted() ?: emptyList()
         }
 
     suspend fun execute(
@@ -118,7 +106,17 @@ class AlpacaBootstrapEngine(
             return@withContext ShellExecutionResult("", "", 0, newPromptPath = currentDisplayDir())
         }
 
-        // Split chained commands by && or ; (respecting quotes simply)
+        // If user entered a multi-statement shell construct (for/while/if/case or command substitution),
+        // pass directly to real POSIX /system/bin/sh inside alpine_rootfs when available.
+        if (isCompoundPosixConstruct(trimmed) && posixBridge.supportsNativePosix()) {
+            return@withContext posixBridge.executePosixCommand(
+                commandLine = trimmed,
+                currentHostDir = resolveHostFile(currentVirtualDir),
+                currentDisplayDir = currentDisplayDir(),
+                envVars = envVars,
+            )
+        }
+
         val segments = splitChainedCommands(trimmed)
         val outBuilder = StringBuilder()
         val errBuilder = StringBuilder()
@@ -161,7 +159,6 @@ class AlpacaBootstrapEngine(
     ): ShellExecutionResult {
         val expandedLine = expandVariables(line)
 
-        // Check output redirection (> or >>) outside quotes
         var redirectFile: String? = null
         var appendMode = false
         var commandPart = expandedLine
@@ -178,7 +175,6 @@ class AlpacaBootstrapEngine(
             redirectFile = expandedLine.substring(overwriteIdx + 1).trim()
         }
 
-        // Pipeline support (cmd1 | cmd2 | ...)
         val stages = splitByUnquotedPipe(commandPart)
         var pipeInput: String? = null
         var lastResult = ShellExecutionResult("", "", 0, newPromptPath = currentDisplayDir())
@@ -194,7 +190,7 @@ class AlpacaBootstrapEngine(
         if (redirectFile != null && lastResult.exitCode == 0) {
             val cleanTarget = tokenize(redirectFile).firstOrNull()
             if (cleanTarget.isNullOrBlank()) {
-                return ShellExecutionResult("", "ash: syntax error near unexpected token `newline'", 2, newPromptPath = currentDisplayDir())
+                return err("ash: syntax error near unexpected token `newline'", 2)
             }
             val hostFile = resolveHostFile(cleanTarget)
             hostFile.parentFile?.mkdirs()
@@ -218,17 +214,16 @@ class AlpacaBootstrapEngine(
         commandHistory: List<String>,
     ): ShellExecutionResult {
         val tokens = tokenize(commandLine)
-        if (tokens.isEmpty()) return ShellExecutionResult("", "", 0, newPromptPath = currentDisplayDir())
+        if (tokens.isEmpty()) return ok("")
         val cmd = tokens[0]
         val args = tokens.drop(1)
 
-        // Handle inline VAR=VALUE assignment
         if (cmd.contains('=') && !cmd.startsWith("=") && args.isEmpty()) {
             val key = cmd.substringBefore('=')
             val value = cmd.substringAfter('=')
             if (key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
                 envVars[key] = value
-                return ShellExecutionResult("", "", 0, newPromptPath = currentDisplayDir())
+                return ok("")
             }
         }
 
@@ -236,11 +231,11 @@ class AlpacaBootstrapEngine(
             "help" -> ok(helpText())
             "clear" -> ShellExecutionResult("", "", 0, clearRequested = true, newPromptPath = currentDisplayDir())
             "pwd" -> ok(currentVirtualDir)
-            "whoami" -> ok(envVars["USER"] ?: "alpaca")
-            "id" -> ok("uid=1000(alpaca) gid=1000(alpaca) groups=1000(alpaca),10(wheel)")
-            "hostname" -> ok("alpaca-android-${Build.DEVICE.lowercase().take(12)}")
+            "whoami" -> ok(envVars["USER"] ?: "alpine")
+            "id" -> ok("uid=1000(alpine) gid=1000(alpine) groups=1000(alpine),10(wheel)")
+            "hostname" -> ok("alpine-${Build.DEVICE.lowercase(Locale.US).take(12).ifEmpty { "android" }}")
             "date" -> ok(SimpleDateFormat("EEE MMM dd HH:mm:ss z yyyy", Locale.US).format(Date()))
-            "echo", "printf" -> handleEcho(args, cmd == "printf")
+            "echo", "printf" -> handleEcho(args)
             "env" -> ok(envVars.entries.joinToString("\n") { "${it.key}=${it.value}" })
             "export" -> handleExport(args)
             "unset" -> {
@@ -271,11 +266,14 @@ class AlpacaBootstrapEngine(
             "cp" -> handleCp(args)
             "mv" -> handleMv(args)
             "chmod" -> handleChmod(args)
-            "apk" -> handleApk(args)
+            "apk" -> {
+                val res = apkManager.execute(args)
+                ShellExecutionResult(res.stdout, res.stderr, res.exitCode, newPromptPath = currentDisplayDir())
+            }
+            "curl", "wget" -> posixBridge.executeCurl(args, currentDisplayDir(), ::resolveHostFile)
             "sh", "ash", "bash", "zsh" -> handleRunScript(args, metrics, commandHistory)
-            "getprop", "vmstat", "ip", "netstat", "ping" -> runSystemBinaryBridge(cmd, args)
+            "getprop", "vmstat", "ip", "netstat", "ping" -> posixBridge.executeSystemBinary(cmd, args, currentDisplayDir())
             else -> {
-                // Check if user ran a script directly like ./sysinfo.sh
                 if (cmd.startsWith("./") || cmd.startsWith("/")) {
                     val file = resolveHostFile(cmd)
                     if (file.exists() && file.isFile) {
@@ -283,6 +281,14 @@ class AlpacaBootstrapEngine(
                     } else {
                         err("ash: $cmd: not found", 127)
                     }
+                } else if (posixBridge.supportsNativePosix() && cmd in NATIVE_POSIX_TOOLS) {
+                    posixBridge.executePosixCommand(
+                        commandLine = commandLine,
+                        currentHostDir = resolveHostFile(currentVirtualDir),
+                        currentDisplayDir = currentDisplayDir(),
+                        envVars = envVars,
+                        stdin = stdin,
+                    )
                 } else {
                     err("ash: $cmd: not found (try 'help' or 'apk search $cmd')", 127)
                 }
@@ -290,11 +296,11 @@ class AlpacaBootstrapEngine(
         }
     }
 
-    private fun handleEcho(args: List<String>, isPrintf: Boolean): ShellExecutionResult {
+    private fun handleEcho(args: List<String>): ShellExecutionResult {
         val text = args.joinToString(" ")
             .replace("\\n", "\n")
             .replace("\\t", "\t")
-        return ok(if (isPrintf) text else text)
+        return ok(text)
     }
 
     private fun handleExport(args: List<String>): ShellExecutionResult {
@@ -319,24 +325,27 @@ class AlpacaBootstrapEngine(
         val builtins = setOf(
             "ash", "sh", "bash", "ls", "cat", "grep", "find", "mkdir", "touch", "rm",
             "cp", "mv", "pwd", "cd", "echo", "env", "apk", "free", "df", "ps", "top",
-            "uname", "uptime", "head", "tail", "wc", "chmod", "whoami", "id", "date"
+            "uname", "uptime", "head", "tail", "wc", "chmod", "whoami", "id", "date", "curl"
         )
         val target = args.firstOrNull() ?: return err("which: missing operand", 1)
-        return if (target in builtins) {
-            ok("/bin/$target")
-        } else {
-            val world = resolveHostFile("/etc/apk/world").readLines()
-            if (target in world) ok("/usr/bin/$target") else err("which: no $target in (${envVars["PATH"]})", 1)
+        return when {
+            target in builtins -> ok("/bin/$target")
+            target in NATIVE_POSIX_TOOLS -> ok("/usr/bin/$target")
+            else -> {
+                val world = resolveHostFile("/etc/apk/world").takeIf { it.exists() }?.readLines().orEmpty()
+                if (target in world) ok("/usr/bin/$target")
+                else err("which: no $target in (${envVars["PATH"]})", 1)
+            }
         }
     }
 
     private fun handleUname(args: List<String>): ShellExecutionResult {
-        val arch = Build.SUPPORTED_ABIS.firstOrNull() ?: "aarch64"
+        val arch = apkManager.currentArch()
         val kernel = System.getProperty("os.version") ?: "6.1.75-android"
-        val host = "alpaca-bootstrap"
+        val host = "alpine-android"
         val flags = args.joinToString("")
         return when {
-            flags.contains("a") -> ok("Linux $host $kernel #1 SMP PREEMPT $arch GNU/Linux (Alpaca 3.21)")
+            flags.contains("a") -> ok("Linux $host $kernel #1 SMP PREEMPT $arch Linux (Alpine ${AlpineApkManager.ALPINE_VERSION})")
             flags.contains("r") -> ok(kernel)
             flags.contains("m") -> ok(arch)
             flags.contains("n") -> ok(host)
@@ -385,7 +394,7 @@ class AlpacaBootstrapEngine(
         val pct = "${metrics.diskPercent.toInt()}%"
         return ok(
             "Filesystem                Size      Used Available Use% Mounted on\n" +
-                "/dev/alpaca_rootfs   ${totalStr.padStart(9)} ${usedStr.padStart(9)} ${availStr.padStart(9)} ${pct.padStart(4)} /"
+                "/dev/alpine_rootfs   ${totalStr.padStart(9)} ${usedStr.padStart(9)} ${availStr.padStart(9)} ${pct.padStart(4)} /"
         )
     }
 
@@ -396,9 +405,9 @@ class AlpacaBootstrapEngine(
         val shell = envVars["SHELL"] ?: "/bin/ash"
         return ok(
             "  PID USER       VSZ STAT CPU% MEM% COMMAND\n" +
-                "    1 root      1420 S    0.0  0.1 /sbin/init alpaca-bootstrap\n" +
-                "  ${(pid - 1).coerceAtLeast(2).toString().padStart(3)} alpaca    4096 S    0.2  0.4 /usr/sbin/telemetry-agent\n" +
-                "  ${pid.toString().padStart(3)} alpaca   ${(metrics.jvmHeapUsedMb * 1024).toString().padStart(5)} R   $cpu  $mem $shell (active, ${metrics.processCount} threads)"
+                "    1 root      1420 S    0.0  0.1 /sbin/init alpine-${AlpineApkManager.ALPINE_VERSION}\n" +
+                "  ${(pid - 1).coerceAtLeast(2).toString().padStart(3)} alpine    4096 S    0.2  0.4 /usr/sbin/telemetry-agent\n" +
+                "  ${pid.toString().padStart(3)} alpine   ${(metrics.jvmHeapUsedMb * 1024).toString().padStart(5)} R   $cpu  $mem $shell (active, ${metrics.processCount} threads)"
         )
     }
 
@@ -446,7 +455,7 @@ class AlpacaBootstrapEngine(
             val size = file.length().toString().padStart(7)
             val mtime = dateFmt.format(Date(file.lastModified()))
             val displayName = if (file.isDirectory) "${file.name}/" else file.name
-            "$typeChar$perms 1 alpaca alpaca $size $mtime $displayName"
+            "$typeChar$perms 1 alpine alpine $size $mtime $displayName"
         }
         return ok("total ${entries.size}\n" + lines.joinToString("\n"))
     }
@@ -664,69 +673,6 @@ class AlpacaBootstrapEngine(
         return ok("")
     }
 
-    private fun handleApk(args: List<String>): ShellExecutionResult {
-        if (args.isEmpty()) {
-            return ok("apk-tools 2.14.6 (Alpaca Linux bootstrap)\nUsage: apk [update | search <pkg> | add <pkg> | del <pkg> | info | list]")
-        }
-        val worldFile = resolveHostFile("/etc/apk/world")
-        val installed = worldFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
-
-        return when (val sub = args[0]) {
-            "update" -> ok(
-                "fetch https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/APKINDEX.tar.gz\n" +
-                    "fetch https://dl-cdn.alpinelinux.org/alpine/v3.21/community/aarch64/APKINDEX.tar.gz\n" +
-                    "v3.21.0-alpaca [https://dl-cdn.alpinelinux.org/alpine/v3.21/main]\n" +
-                    "OK: ${apkRepositoryCatalog.size + installed.size} distinct packages available"
-            )
-            "info", "list" -> ok(installed.sorted().joinToString("\n") { "$it - installed" })
-            "search" -> {
-                val query = args.getOrNull(1)?.lowercase().orEmpty()
-                val matches = apkRepositoryCatalog.entries
-                    .filter { query.isEmpty() || it.key.contains(query) || it.value.lowercase().contains(query) }
-                    .map { "${it.key}-${it.value}" }
-                if (matches.isEmpty()) err("ERROR: no packages matched '$query'", 1) else ok(matches.joinToString("\n"))
-            }
-            "add" -> {
-                val pkgs = args.drop(1).filter { !it.startsWith("-") }
-                if (pkgs.isEmpty()) return err("apk add: specify package name(s)", 1)
-                val log = StringBuilder()
-                for ((idx, pkg) in pkgs.withIndex()) {
-                    if (pkg in installed) {
-                        log.append("(${idx + 1}/${pkgs.size}) $pkg already installed\n")
-                    } else if (pkg in apkRepositoryCatalog || pkg.matches(Regex("[a-z0-9._-]+"))) {
-                        installed.add(pkg)
-                        val ver = apkRepositoryCatalog[pkg]?.substringBefore(" -") ?: "1.0.0-r0"
-                        log.append("(${idx + 1}/${pkgs.size}) Installing $pkg ($ver)\n")
-                    } else {
-                        return err("ERROR: unable to select package '$pkg'", 1)
-                    }
-                }
-                worldFile.writeText(installed.sorted().joinToString("\n") + "\n")
-                log.append("OK: ${installed.size} packages in /etc/apk/world")
-                ok(log.toString())
-            }
-            "del" -> {
-                val pkgs = args.drop(1).filter { !it.startsWith("-") }
-                if (pkgs.isEmpty()) return err("apk del: specify package name(s)", 1)
-                val log = StringBuilder()
-                for (pkg in pkgs) {
-                    if (pkg in setOf("alpaca-baselayout", "busybox", "musl", "apk-tools")) {
-                        return err("ERROR: cannot remove essential base package '$pkg'", 1)
-                    }
-                    if (installed.remove(pkg)) {
-                        log.append("Purging $pkg\n")
-                    } else {
-                        log.append("Package $pkg not installed\n")
-                    }
-                }
-                worldFile.writeText(installed.sorted().joinToString("\n") + "\n")
-                log.append("OK: ${installed.size} packages remaining")
-                ok(log.toString())
-            }
-            else -> err("apk: unknown subcommand '$sub' (try: update, search, add, del, info)", 1)
-        }
-    }
-
     private fun handleRunScript(
         args: List<String>,
         metrics: SystemMetricsSnapshot,
@@ -738,7 +684,17 @@ class AlpacaBootstrapEngine(
         if (!scriptFile.exists() || !scriptFile.isFile) {
             return err("sh: can't open '$target': No such file or directory", 2)
         }
-        val lines = scriptFile.readLines()
+        val rawScript = scriptFile.readText()
+        if (isCompoundPosixConstruct(rawScript) && posixBridge.supportsNativePosix()) {
+            return posixBridge.executePosixCommand(
+                commandLine = rawScript,
+                currentHostDir = resolveHostFile(currentVirtualDir),
+                currentDisplayDir = currentDisplayDir(),
+                envVars = envVars,
+            )
+        }
+
+        val lines = rawScript.lines()
         val out = StringBuilder()
         val err = StringBuilder()
         var exitCode = 0
@@ -759,28 +715,6 @@ class AlpacaBootstrapEngine(
         return ShellExecutionResult(out.toString(), err.toString(), exitCode, newPromptPath = currentDisplayDir())
     }
 
-    private fun runSystemBinaryBridge(cmd: String, args: List<String>): ShellExecutionResult {
-        return try {
-            val binary = "/system/bin/$cmd"
-            if (!File(binary).exists()) {
-                return err("ash: $cmd: native utility unavailable on this Android build", 127)
-            }
-            val safeArgs = args.take(6)
-            val pb = ProcessBuilder(listOf(binary) + safeArgs)
-            val process = pb.start()
-            val finished = process.waitFor(4, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                return err("$cmd: timed out after 4s", 124)
-            }
-            val stdout = process.inputStream.bufferedReader().readText().trimEnd()
-            val stderr = process.errorStream.bufferedReader().readText().trimEnd()
-            ShellExecutionResult(stdout, stderr, process.exitValue(), newPromptPath = currentDisplayDir())
-        } catch (e: Exception) {
-            err("$cmd: ${e.localizedMessage ?: "execution failed"}", 1)
-        }
-    }
-
     private fun resolveHostFile(virtualOrRelativePath: String): File {
         val norm = normalizeVirtualPath(virtualOrRelativePath)
         val relative = norm.removePrefix("/")
@@ -795,11 +729,16 @@ class AlpacaBootstrapEngine(
     }
 
     private fun normalizeVirtualPath(path: String): String {
+        val normalizedInput = when {
+            path == "/home/alpaca" -> homeVirtualPath
+            path.startsWith("/home/alpaca/") -> homeVirtualPath + path.removePrefix("/home/alpaca")
+            else -> path
+        }
         val expanded = when {
-            path == "~" -> homeVirtualPath
-            path.startsWith("~/") -> homeVirtualPath + path.removePrefix("~")
-            path.startsWith("/") -> path
-            else -> "$currentVirtualDir/$path"
+            normalizedInput == "~" -> homeVirtualPath
+            normalizedInput.startsWith("~/") -> homeVirtualPath + normalizedInput.removePrefix("~")
+            normalizedInput.startsWith("/") -> normalizedInput
+            else -> "$currentVirtualDir/$normalizedInput"
         }
         val stack = ArrayDeque<String>()
         for (part in expanded.split('/')) {
@@ -817,6 +756,10 @@ class AlpacaBootstrapEngine(
         val filePath = hostFile.canonicalPath
         val rel = filePath.removePrefix(rootPath).replace(File.separatorChar, '/')
         return if (rel.isEmpty()) "/" else rel
+    }
+
+    private fun isCompoundPosixConstruct(script: String): Boolean {
+        return Regex("\\b(for|while|until|if|case)\\b|\\$\\(|`").containsMatchIn(script)
     }
 
     private fun expandVariables(input: String): String {
@@ -915,58 +858,93 @@ class AlpacaBootstrapEngine(
     }
 
     private fun bootstrapRootFsIfNeeded() {
-        val marker = File(rootDir, "etc/os-release")
-        if (marker.exists()) return
+        val alpineRelease = File(rootDir, "etc/alpine-release")
+        if (alpineRelease.exists()) return
 
         listOf(
-            "bin", "etc/apk", "home/alpaca/scripts", "home/alpaca/projects",
-            "usr/bin", "usr/local/bin", "var/log", "tmp"
+            "bin", "etc/apk", "home/alpine/scripts", "home/alpine/projects",
+            "lib/apk/db", "usr/bin", "usr/local/bin", "var/cache/apk", "var/log", "tmp"
         ).forEach { File(rootDir, it).mkdirs() }
 
+        // Migrate any existing scripts saved in prior /home/alpaca workspace
+        val legacyScriptsDir = File(legacyRootDir, "home/alpaca/scripts")
+        if (legacyScriptsDir.exists() && legacyScriptsDir.isDirectory) {
+            legacyScriptsDir.listFiles()?.forEach { file ->
+                if (file.isFile) {
+                    val dest = File(rootDir, "home/alpine/scripts/${file.name}")
+                    if (!dest.exists()) file.copyTo(dest, overwrite = false)
+                }
+            }
+        }
+
+        val arch = AlpineApkManager.detectAlpineArch()
         File(rootDir, "etc/os-release").writeText(
             """
-            NAME="Alpaca Linux"
-            ID=alpaca
-            VERSION_ID=3.21.0-bootstrap
-            PRETTY_NAME="Alpaca Linux v3.21 (musl/ash bootstrap)"
+            NAME="Alpine Linux"
+            ID=alpine
+            VERSION_ID=${AlpineApkManager.ALPINE_VERSION}
+            PRETTY_NAME="Alpine Linux v3.21"
             HOME_URL="https://alpinelinux.org/"
+            BUG_REPORT_URL="https://gitlab.alpinelinux.org/alpine/aports/-/issues"
             """.trimIndent() + "\n"
         )
-        File(rootDir, "etc/motd").writeText(
-            "Welcome to Alpaca Linux v3.21 (bootstrap rootfs)!\n" +
-                "Type 'help' for commands, 'apk list' for packages, or tap Mic for voice.\n"
-        )
+        File(rootDir, "etc/alpine-release").writeText("${AlpineApkManager.ALPINE_VERSION}\n")
+        File(rootDir, "etc/apk/arch").writeText("$arch\n")
         File(rootDir, "etc/apk/repositories").writeText(
             "https://dl-cdn.alpinelinux.org/alpine/v3.21/main\n" +
                 "https://dl-cdn.alpinelinux.org/alpine/v3.21/community\n"
         )
-        File(rootDir, "etc/apk/world").writeText(
-            "alpaca-baselayout\napk-tools\nbusybox\nmusl\nash\ncurl\ngit\nhtop\npython3\n"
+        val basePackages = listOf(
+            "alpine-baselayout",
+            "alpine-release",
+            "apk-tools",
+            "busybox",
+            "busybox-binsh",
+            "musl",
+            "ca-certificates",
+            "curl",
         )
-        File(rootDir, "home/alpaca/README.md").writeText(
-            "# Alpaca Linux Bootstrap Workspace\n" +
-                "- Run `sh ~/sysinfo.sh` to inspect live device & rootfs telemetry.\n" +
-                "- Use `apk search <pkg>` / `apk add <pkg>` to manage bootstrap packages.\n" +
-                "- Scripts generated in Code AI can be saved directly to ~/scripts/.\n"
+        File(rootDir, "etc/apk/world").writeText(basePackages.joinToString("\n") + "\n")
+        apkManager.seedInitialInstalledDb(basePackages)
+        File(rootDir, "etc/passwd").writeText(
+            "root:x:0:0:root:/root:/bin/ash\n" +
+                "alpine:x:1000:1000:Alpine User:/home/alpine:/bin/ash\n"
         )
-        File(rootDir, "home/alpaca/sysinfo.sh").writeText(
+        File(rootDir, "etc/group").writeText(
+            "root:x:0:root\nwheel:x:10:alpine\nalpine:x:1000:alpine\n"
+        )
+        File(rootDir, "etc/hosts").writeText(
+            "127.0.0.1\tlocalhost localhost.localdomain\n::1\t\tlocalhost localhost.localdomain\n"
+        )
+        File(rootDir, "etc/motd").writeText(
+            "Welcome to Alpine Linux ${AlpineApkManager.ALPINE_VERSION} ($arch)!\n" +
+                "Run 'apk update' to sync live v3.21 APKINDEX repositories from dl-cdn.alpinelinux.org.\n"
+        )
+        File(rootDir, "home/alpine/README.md").writeText(
+            "# Alpine Linux v3.21 Workspace\n" +
+                "- Sync live Alpine APKINDEX: `apk update` then `apk search <pkg>` or `apk info -a <pkg>`\n" +
+                "- Run `sh ~/sysinfo.sh` to inspect live device & Alpine rootfs telemetry.\n" +
+                "- Native POSIX utilities (`awk`, `sed`, `sort`, `tar`, `sha256sum`, `curl`) execute in `alpine_rootfs`.\n"
+        )
+        File(rootDir, "home/alpine/sysinfo.sh").writeText(
             "#!/bin/ash\n" +
-                "echo \"=== Alpaca Linux System Snapshot ===\"\n" +
+                "echo \"=== Alpine Linux ${AlpineApkManager.ALPINE_VERSION} ($arch) ===\"\n" +
+                "cat /etc/alpine-release\n" +
                 "uname -a\n" +
                 "uptime\n" +
                 "free -h\n" +
                 "df -h\n"
         )
-        File(rootDir, "home/alpaca/scripts/disk_audit.sh").writeText(
+        File(rootDir, "home/alpine/scripts/disk_audit.sh").writeText(
             "#!/bin/ash\n" +
-                "echo \"Checking /home/alpaca workspace files...\"\n" +
-                "find /home/alpaca\n" +
+                "echo \"Checking /home/alpine workspace files...\"\n" +
+                "find /home/alpine\n" +
                 "df -h\n"
         )
-        File(rootDir, "var/log/alpaca-boot.log").writeText(
-            "[0.000] alpaca-init: mounted rootfs at /home/alpaca\n" +
-                "[0.120] apk-tools: initialized package index (v3.21)\n" +
-                "[0.240] ai-copilot: Firebase AI Logic telemetry bridge armed\n"
+        File(rootDir, "var/log/alpine-boot.log").writeText(
+            "[0.000] alpine-init: mounted alpine_rootfs ($arch) at /home/alpine\n" +
+                "[0.120] apk-tools: configured v3.21 main & community repositories\n" +
+                "[0.240] posix-bridge: /system/bin/sh + toybox execution armed\n"
         )
     }
 
@@ -978,11 +956,21 @@ class AlpacaBootstrapEngine(
 
     private fun helpText(): String =
         """
-        Alpaca Linux v3.21 Bootstrap Shell Builtins:
+        Alpine Linux ${AlpineApkManager.ALPINE_VERSION} (${apkManager.currentArch()}) Shell:
           Files & Nav : ls [-la], cd, pwd, cat, head, tail, wc, grep [-inr], find, mkdir [-p], touch, rm [-rf], cp, mv, chmod
+          POSIX Tools : awk, sed, sort, uniq, cut, tr, seq, expr, sha256sum, md5sum, base64, gzip, tar, curl
           System & IO : uname [-a], uptime, free [-h], df [-h], ps, top, env, export, which, whoami, id, date, history, clear
-          Packages    : apk [update | search <pkg> | add <pkg> | del <pkg> | info]
-          Scripting   : sh <script.sh> | ash <script.sh> | pipes (|) | redirect (> / >>) | chains (&& / ;)
+          Packages    : apk [update | search <pkg> | add <pkg> | del <pkg> | info [-a] <pkg> | list]
+          Scripting   : sh <script.sh> | ash | loops/conditionals | pipes (|) | redirect (> / >>) | chains (&& / ;)
           Native Sys  : getprop, vmstat, ip, netstat, ping -c 1 <host>
         """.trimIndent()
+
+    companion object {
+        private val NATIVE_POSIX_TOOLS = setOf(
+            "awk", "sed", "sort", "uniq", "cut", "tr", "seq", "expr",
+            "basename", "dirname", "readlink", "stat", "sha256sum", "md5sum",
+            "base64", "gzip", "gunzip", "tar", "sleep", "test", "[", "true", "false",
+            "yes", "nl", "od", "xxd", "diff", "cmp"
+        )
+    }
 }

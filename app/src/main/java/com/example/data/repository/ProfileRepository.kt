@@ -74,9 +74,9 @@ class ProfileRepository(
                     .collection("profiles").document("prof_alpaca_core")
                 val payload = mapOf(
                     "userId" to uid,
-                    "name" to "Alpaca Core",
+                    "name" to "Alpine Core",
                     "preferredShell" to "/bin/ash",
-                    "promptSymbol" to "alpaca:~$",
+                    "promptSymbol" to "alpine:~$",
                     "aiModelName" to "gemini-3.8-flash",
                     "aiTemperature" to 0.4,
                     "proactiveMonitoring" to true,
@@ -120,7 +120,7 @@ class ProfileRepository(
 
             val cleanName = name.trim().take(40)
             require(cleanName.isNotEmpty()) { "Profile name cannot be empty." }
-            val cleanPrompt = promptSymbol.trim().take(24).ifEmpty { "alpaca:~$" }
+            val cleanPrompt = promptSymbol.trim().take(24).ifEmpty { "alpine:~$" }
             val validShell = if (preferredShell in ALLOWED_SHELLS) preferredShell else "/bin/ash"
             val validModel = if (aiModelName in ALLOWED_MODELS) aiModelName else "gemini-3.8-flash"
             val clampedTemp = aiTemperature.coerceIn(0.0, 1.0)
@@ -193,7 +193,7 @@ class ProfileRepository(
 
             val cleanName = name.trim().take(40)
             require(cleanName.isNotEmpty()) { "Profile name cannot be empty." }
-            val cleanPrompt = promptSymbol.trim().take(24).ifEmpty { "alpaca:~$" }
+            val cleanPrompt = promptSymbol.trim().take(24).ifEmpty { "alpine:~$" }
             val validShell = if (preferredShell in ALLOWED_SHELLS) preferredShell else "/bin/ash"
             val validModel = if (aiModelName in ALLOWED_MODELS) aiModelName else "gemini-3.8-flash"
 
