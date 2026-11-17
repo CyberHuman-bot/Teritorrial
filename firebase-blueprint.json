@@ -1,0 +1,155 @@
+{
+  "entities": {
+    "TerminalProfile": {
+      "title": "TerminalProfile",
+      "description": "A user-owned Alpaca Linux terminal profile storing preferred shell, command history, and custom AI model settings.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase user UID owning this profile."
+        },
+        "name": {
+          "type": "string",
+          "description": "Profile display name (1-40 characters)."
+        },
+        "preferredShell": {
+          "type": "string",
+          "enum": ["/bin/ash", "/bin/sh", "/bin/bash", "/bin/zsh"],
+          "description": "Preferred Linux shell binary path."
+        },
+        "promptSymbol": {
+          "type": "string",
+          "description": "Custom shell prompt label (1-24 characters)."
+        },
+        "aiModelName": {
+          "type": "string",
+          "enum": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"],
+          "description": "Selected Gemini model for real-time suggestions, monitoring, and code studio."
+        },
+        "aiTemperature": {
+          "type": "number",
+          "description": "Model sampling temperature between 0.0 and 1.0."
+        },
+        "proactiveMonitoring": {
+          "type": "boolean",
+          "description": "Whether AI proactively analyzes system telemetry bottlenecks."
+        },
+        "autoSuggestEnabled": {
+          "type": "boolean",
+          "description": "Whether real-time command and snippet suggestions are enabled."
+        },
+        "cpuAlertThreshold": {
+          "type": "integer",
+          "description": "CPU usage percentage threshold (10-99) triggering proactive AI alerts."
+        },
+        "memAlertThreshold": {
+          "type": "integer",
+          "description": "Memory consumption percentage threshold (10-99) triggering proactive AI alerts."
+        },
+        "activeProfile": {
+          "type": "boolean",
+          "description": "Marks the currently loaded active profile for the user."
+        },
+        "commandHistory": {
+          "type": "array",
+          "description": "Bounded list (up to 50) of recent shell commands executed in this profile."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "name",
+        "preferredShell",
+        "promptSymbol",
+        "aiModelName",
+        "aiTemperature",
+        "proactiveMonitoring",
+        "autoSuggestEnabled",
+        "cpuAlertThreshold",
+        "memAlertThreshold",
+        "activeProfile",
+        "commandHistory",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SavedScript": {
+      "title": "SavedScript",
+      "description": "AI-generated or debugged shell script or code snippet stored in the user's cloud workspace.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase user UID owning this script."
+        },
+        "profileId": {
+          "type": "string",
+          "description": "Terminal profile ID associated with this script."
+        },
+        "title": {
+          "type": "string",
+          "description": "Script title or filename (1-80 characters)."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["sh", "bash", "python", "c", "awk", "sed", "dockerfile", "other"],
+          "description": "Script language identifier."
+        },
+        "code": {
+          "type": "string",
+          "description": "Full script or code snippet source (1-12000 characters)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Summary of script purpose or debugging fix notes (0-500 characters)."
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": ["generated", "debugged", "manual"],
+          "description": "Origin of the saved script."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "profileId",
+        "title",
+        "language",
+        "code",
+        "description",
+        "sourceType",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/TerminalProfile" },
+      "description": "User-scoped terminal profiles storing shell preferences, command history, and AI settings."
+    },
+    "/users/{userId}/scripts/{scriptId}": {
+      "schema": { "$ref": "#/entities/SavedScript" },
+      "description": "User-scoped AI-generated and debugged scripts."
+    }
+  }
+}

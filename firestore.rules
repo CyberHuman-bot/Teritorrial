@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTerminalProfile(data) {
+      return data.userId is string &&
+             data.userId == request.auth.uid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 40 &&
+             data.preferredShell in ['/bin/ash', '/bin/sh', '/bin/bash', '/bin/zsh'] &&
+             data.promptSymbol is string && data.promptSymbol.size() >= 1 && data.promptSymbol.size() <= 24 &&
+             data.aiModelName in ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon'] &&
+             (data.aiTemperature is float || data.aiTemperature is int) &&
+             data.aiTemperature >= 0.0 && data.aiTemperature <= 1.0 &&
+             data.proactiveMonitoring is bool &&
+             data.autoSuggestEnabled is bool &&
+             data.cpuAlertThreshold is int && data.cpuAlertThreshold >= 10 && data.cpuAlertThreshold <= 99 &&
+             data.memAlertThreshold is int && data.memAlertThreshold >= 10 && data.memAlertThreshold <= 99 &&
+             data.activeProfile is bool &&
+             data.commandHistory is list &&
+             data.commandHistory.size() <= 50 &&
+             (data.commandHistory.size() == 0 || (data.commandHistory[0] is string && data.commandHistory[0].size() <= 500));
+    }
+
+    function isValidSavedScript(data) {
+      return data.userId is string &&
+             data.userId == request.auth.uid &&
+             data.profileId is string && data.profileId.size() >= 1 && data.profileId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
+             data.language in ['sh', 'bash', 'python', 'c', 'awk', 'sed', 'dockerfile', 'other'] &&
+             data.code is string && data.code.size() >= 1 && data.code.size() <= 12000 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.sourceType in ['generated', 'debugged', 'manual'];
+    }
+
+    match /users/{userId}/profiles/{profileId} {
+      allow get: if isOwner(userId) && isValidId(profileId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'name', 'preferredShell', 'promptSymbol',
+                         'aiModelName', 'aiTemperature', 'proactiveMonitoring',
+                         'autoSuggestEnabled', 'cpuAlertThreshold', 'memAlertThreshold',
+                         'activeProfile', 'commandHistory', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'name', 'preferredShell', 'promptSymbol',
+                         'aiModelName', 'aiTemperature', 'proactiveMonitoring',
+                         'autoSuggestEnabled', 'cpuAlertThreshold', 'memAlertThreshold',
+                         'activeProfile', 'commandHistory', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidTerminalProfile(incoming());
+
+      allow update: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       isValidTerminalProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (
+                         incoming().diff(existing()).affectedKeys().hasOnly(['commandHistory', 'updatedAt']) ||
+                         incoming().diff(existing()).affectedKeys().hasOnly(['activeProfile', 'updatedAt']) ||
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'name', 'preferredShell', 'promptSymbol', 'aiModelName',
+                           'aiTemperature', 'proactiveMonitoring', 'autoSuggestEnabled',
+                           'cpuAlertThreshold', 'memAlertThreshold', 'activeProfile', 'updatedAt'
+                         ])
+                       );
+
+      allow delete: if isOwner(userId) && isValidId(profileId);
+    }
+
+    match /users/{userId}/scripts/{scriptId} {
+      allow get: if isOwner(userId) && isValidId(scriptId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(scriptId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'profileId', 'title', 'language',
+                         'code', 'description', 'sourceType', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'profileId', 'title', 'language',
+                         'code', 'description', 'sourceType', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidSavedScript(incoming());
+
+      allow update: if isOwner(userId) &&
+                       isValidId(scriptId) &&
+                       isValidSavedScript(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'title', 'language', 'code', 'description', 'sourceType', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(scriptId);
+    }
+  }
+}

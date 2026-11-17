@@ -2,38 +2,39 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import com.example.ui.theme.MyApplicationTheme
+import androidx.compose.ui.graphics.toArgb
+import com.example.firebase.configureAppCheck
+import com.example.ui.AppNavigation
+import com.example.ui.theme.AlpacaShellTheme
+import com.example.ui.theme.ObsidianBg
 
 class MainActivity : ComponentActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    enableEdgeToEdge()
-    setContent {
-      MyApplicationTheme {
-        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-          Greeting(name = "Android", modifier = Modifier.padding(innerPadding))
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Configure App Check with launch intent before any UI, ViewModels, or Firebase operations
+        configureAppCheck(this, intent)
+
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(ObsidianBg.toArgb()),
+            navigationBarStyle = SystemBarStyle.dark(ObsidianBg.toArgb()),
+        )
+
+        setContent {
+            AlpacaShellTheme(darkTheme = true) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = ObsidianBg,
+                ) {
+                    AppNavigation()
+                }
+            }
         }
-      }
     }
-  }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-  Text(text = "Hello $name!", modifier = modifier)
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-  MyApplicationTheme { Greeting("Android") }
 }
