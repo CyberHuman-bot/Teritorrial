@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -430,8 +431,15 @@ fun TerminalScreen(
                 }
             },
             onExecute = {
-                viewModel.executeCommand(textFieldValue.text)
-                focusTerminalInput()
+                val cmd = textFieldValue.text.trim()
+                if (cmd.equals("ssh", ignoreCase = true) || cmd.equals("container", ignoreCase = true)) {
+                    textFieldValue = TextFieldValue("")
+                    viewModel.onInputChanged("")
+                    showContainerSheet = true
+                } else {
+                    viewModel.executeCommand(textFieldValue.text)
+                    focusTerminalInput()
+                }
             },
             onBarClick = { focusTerminalInput() },
         )
@@ -452,6 +460,7 @@ fun TerminalScreen(
                 viewModel.sendInterrupt()
                 focusTerminalInput()
             },
+            onOpenContainer = { showContainerSheet = true },
             onHistoryUp = {
                 viewModel.cycleHistory(up = true)
                 focusTerminalInput()
@@ -506,14 +515,18 @@ private fun TerminalHeaderBar(
         border = BorderStroke(1.dp, TermuxKeyBorder),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            // Row 1: Session Mode + Container SSH Button + Telemetry Pill
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
                 Text(
                     text = if (connectedSsh != null) {
                         "SSH ${connectedSsh.config.displayTarget()}"
@@ -527,115 +540,146 @@ private fun TerminalHeaderBar(
                     color = if (connectedSsh != null) CyanElectric else TermuxPromptGreen,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
                 )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Surface(
+                        color = if (connectedSsh != null) {
+                            MintEmerald.copy(alpha = 0.2f)
+                        } else {
+                            CyanElectric.copy(alpha = 0.14f)
+                        },
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (connectedSsh != null) MintEmerald else CyanElectric.copy(alpha = 0.7f)
+                        ),
+                        modifier = Modifier
+                            .heightIn(min = 36.dp)
+                            .clickable { onOpenContainerSheet() }
+                            .testTag("terminal_container_pill"),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Dns,
+                                contentDescription = "Open SSH Container settings",
+                                tint = if (connectedSsh != null) MintEmerald else CyanElectric,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Text(
+                                text = if (connectedSsh != null) "SSH ON" else "Container",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                                color = if (connectedSsh != null) MintEmerald else CyanElectric,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = TermuxKeyBg,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, TermuxKeyBorder),
+                        modifier = Modifier
+                            .heightIn(min = 36.dp)
+                            .clickable { onOpenMonitor() }
+                            .testTag("terminal_telemetry_pill"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = "${metrics.cpuPercent.toInt()}%",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = if (metrics.cpuPercent >= (activeProfile?.cpuAlertThreshold ?: 75L)) AmberAlert else CyanElectric,
+                            )
+                            Text(
+                                text = "${metrics.memPercent.toInt()}%M",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = if (metrics.memPercent >= (activeProfile?.memAlertThreshold ?: 80L)) AmberAlert else TermuxPromptGreen,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Row 2: Current Working Directory + Voice / TTS / Clear Controls
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
                 Text(
                     text = if (connectedSsh != null) "Live Container PTY" else currentDir,
                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     color = CyanElectric,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
                 )
-            }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Surface(
-                    color = if (connectedSsh != null) MintEmerald.copy(alpha = 0.16f) else TermuxKeyBg,
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(
-                        1.dp,
-                        if (connectedSsh != null) MintEmerald.copy(alpha = 0.65f) else TermuxKeyBorder
-                    ),
-                    modifier = Modifier
-                        .heightIn(min = 36.dp)
-                        .clickable { onOpenContainerSheet() }
-                        .testTag("terminal_container_pill"),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    IconButton(
+                        onClick = onMicClick,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("voice_mic_button"),
                     ) {
-                        Text(
-                            text = if (connectedSsh != null) "SSH ON" else "Container",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            color = if (connectedSsh != null) MintEmerald else CyanElectric,
+                        Icon(
+                            imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                            contentDescription = if (isListening) "Stop voice input" else "Voice command input",
+                            tint = if (isListening) CrimsonError else TextMuted,
                         )
                     }
-                }
 
-                Surface(
-                    color = TermuxKeyBg,
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, TermuxKeyBorder),
-                    modifier = Modifier
-                        .heightIn(min = 36.dp)
-                        .clickable { onOpenMonitor() }
-                        .testTag("terminal_telemetry_pill"),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    IconButton(
+                        onClick = onToggleVoiceReadout,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("voice_readout_toggle_button"),
                     ) {
-                        Text(
-                            text = "${metrics.cpuPercent.toInt()}%",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = if (metrics.cpuPercent >= (activeProfile?.cpuAlertThreshold ?: 75L)) AmberAlert else CyanElectric,
-                        )
-                        Text(
-                            text = "${metrics.memPercent.toInt()}%M",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = if (metrics.memPercent >= (activeProfile?.memAlertThreshold ?: 80L)) AmberAlert else TermuxPromptGreen,
+                        Icon(
+                            imageVector = if (voiceReadoutEnabled) {
+                                Icons.AutoMirrored.Rounded.VolumeUp
+                            } else {
+                                Icons.AutoMirrored.Rounded.VolumeOff
+                            },
+                            contentDescription = if (voiceReadoutEnabled) "Disable voice readout" else "Enable voice readout",
+                            tint = if (voiceReadoutEnabled) CyanElectric else TextMuted,
                         )
                     }
-                }
 
-                IconButton(
-                    onClick = onMicClick,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("voice_mic_button"),
-                ) {
-                    Icon(
-                        imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
-                        contentDescription = if (isListening) "Stop voice input" else "Voice command input",
-                        tint = if (isListening) CrimsonError else TextMuted,
-                    )
-                }
-
-                IconButton(
-                    onClick = onToggleVoiceReadout,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("voice_readout_toggle_button"),
-                ) {
-                    Icon(
-                        imageVector = if (voiceReadoutEnabled) {
-                            Icons.AutoMirrored.Rounded.VolumeUp
-                        } else {
-                            Icons.AutoMirrored.Rounded.VolumeOff
-                        },
-                        contentDescription = if (voiceReadoutEnabled) "Disable voice readout" else "Enable voice readout",
-                        tint = if (voiceReadoutEnabled) CyanElectric else TextMuted,
-                    )
-                }
-
-                IconButton(
-                    onClick = onClearTerminal,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("clear_terminal_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.DeleteSweep,
-                        contentDescription = "Clear terminal output",
-                        tint = TextMuted,
-                    )
+                    IconButton(
+                        onClick = onClearTerminal,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("clear_terminal_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteSweep,
+                            contentDescription = "Clear terminal output",
+                            tint = TextMuted,
+                        )
+                    }
                 }
             }
         }
@@ -815,6 +859,7 @@ private fun TermuxExtraKeysBar(
     onInsertToken: (String) -> Unit,
     onTabComplete: () -> Unit,
     onInterrupt: () -> Unit,
+    onOpenContainer: () -> Unit,
     onHistoryUp: () -> Unit,
     onHistoryDown: () -> Unit,
     onClear: () -> Unit,
@@ -832,6 +877,7 @@ private fun TermuxExtraKeysBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
+            TermuxKeyButton(label = "SSH", onClick = onOpenContainer, testTag = "extra_key_ssh_button")
             TermuxKeyButton(label = "CTRL+C", onClick = onInterrupt, testTag = "interrupt_ctrl_c_button")
             TermuxKeyButton(label = "TAB", onClick = onTabComplete)
             TermuxKeyButton(label = "↑", onClick = onHistoryUp, testTag = "history_up_button")
@@ -1273,6 +1319,7 @@ private fun TermuxTerminalPreview() {
                 onInsertToken = {},
                 onTabComplete = {},
                 onInterrupt = {},
+                onOpenContainer = {},
                 onHistoryUp = {},
                 onHistoryDown = {},
                 onClear = {},
