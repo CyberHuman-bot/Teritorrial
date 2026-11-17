@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Alpaca Shell</string>
+    <string name="voice_permission_denied">Microphone permission is required for voice commands. Grant permission in App Settings.</string>
+    <string name="voice_open_settings">Settings</string>
+    <string name="voice_listening_speech">Listening… speak a Linux command or intent</string>
+    <string name="voice_listening_audio">Recording audio for Gemini… tap Done when finished</string>
+    <string name="voice_translating">Gemini AI processing voice command…</string>
 </resources>

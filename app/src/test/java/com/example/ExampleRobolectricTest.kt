@@ -47,4 +47,18 @@ class ExampleRobolectricTest {
         assertEquals(0, apkAdd.exitCode)
         assertTrue(apkAdd.stdout.contains("jq - installed"))
     }
+
+    @Test
+    fun `speech to text manager initializes idle and handles missing recognizer service cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = com.example.voice.SpeechToTextManager(context)
+        assertEquals(com.example.voice.SpeechToTextState.Idle, manager.state.value)
+        if (!manager.isAvailable()) {
+            manager.startListening()
+            assertTrue(manager.state.value is com.example.voice.SpeechToTextState.Error)
+            manager.resetState()
+            assertEquals(com.example.voice.SpeechToTextState.Idle, manager.state.value)
+        }
+        manager.destroy()
+    }
 }

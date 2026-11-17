@@ -18,9 +18,12 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -114,11 +117,23 @@ class TerminalMonitorViewModel(
     private val _voiceAiTranslate = MutableStateFlow(true)
     val voiceAiTranslate: StateFlow<Boolean> = _voiceAiTranslate.asStateFlow()
 
+    private val _voiceAutoExecute = MutableStateFlow(false)
+    val voiceAutoExecute: StateFlow<Boolean> = _voiceAutoExecute.asStateFlow()
+
+    private val _voiceReadoutEnabled = MutableStateFlow(false)
+    val voiceReadoutEnabled: StateFlow<Boolean> = _voiceReadoutEnabled.asStateFlow()
+
     private val _isTranslatingVoice = MutableStateFlow(false)
     val isTranslatingVoice: StateFlow<Boolean> = _isTranslatingVoice.asStateFlow()
 
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
+
+    private val _voicePermissionDenied = MutableStateFlow(false)
+    val voicePermissionDenied: StateFlow<Boolean> = _voicePermissionDenied.asStateFlow()
+
+    private val _voiceSpeakEvent = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val voiceSpeakEvent: SharedFlow<String> = _voiceSpeakEvent.asSharedFlow()
 
     private var suggestionDebounceJob: Job? = null
     private var lastAutoAnalysisMillis = 0L
@@ -176,12 +191,30 @@ class TerminalMonitorViewModel(
         _voiceAiTranslate.value = !_voiceAiTranslate.value
     }
 
+    fun toggleVoiceAutoExecute() {
+        _voiceAutoExecute.value = !_voiceAutoExecute.value
+    }
+
+    fun toggleVoiceReadout() {
+        val next = !_voiceReadoutEnabled.value
+        _voiceReadoutEnabled.value = next
+        if (next) {
+            _voiceSpeakEvent.tryEmit("Voice readout enabled.")
+        }
+    }
+
     fun dismissProactiveAlert() {
         _proactiveAlert.value = null
     }
 
     fun clearStatusBanner() {
         _statusBanner.value = null
+        _voicePermissionDenied.value = false
+    }
+
+    fun setVoicePermissionDeniedError() {
+        _voicePermissionDenied.value = true
+        _statusBanner.value = "Microphone permission is required for voice commands."
     }
 
     fun cycleHistory(up: Boolean) {
@@ -202,11 +235,25 @@ class TerminalMonitorViewModel(
         }
     }
 
+    fun injectVoiceInput(transcript: String) {
+        val clean = transcript.trim()
+        if (clean.isEmpty()) return
+        _inputText.value = clean
+        historyIndex = -1
+    }
+
     fun handleVoiceTranscript(transcript: String) {
         val clean = transcript.trim()
         if (clean.isEmpty()) return
+        _voicePermissionDenied.value = false
+        _statusBanner.value = null
+
         if (!_voiceAiTranslate.value) {
-            _inputText.value = clean
+            if (_voiceAutoExecute.value) {
+                executeCommand(clean)
+            } else {
+                injectVoiceInput(clean)
+            }
             return
         }
         viewModelScope.launch {
@@ -220,14 +267,87 @@ class TerminalMonitorViewModel(
             )
             _isTranslatingVoice.value = false
             result.onSuccess { cmd ->
-                _inputText.value = cmd
                 appendEntry(
                     text = "Voice -> \"$clean\" mapped to `$cmd`",
                     type = EntryType.AI_SUGGESTION
                 )
+                if (_voiceAutoExecute.value) {
+                    if (_voiceReadoutEnabled.value) {
+                        _voiceSpeakEvent.tryEmit("Running $cmd")
+                    }
+                    executeCommand(cmd)
+                } else {
+                    injectVoiceInput(cmd)
+                    if (_voiceReadoutEnabled.value) {
+                        _voiceSpeakEvent.tryEmit("Ready: $cmd")
+                    }
+                }
             }.onFailure { err ->
-                _inputText.value = clean
+                injectVoiceInput(clean)
                 _statusBanner.value = err.localizedMessage ?: "Voice AI translation failed; kept raw transcript."
+            }
+        }
+    }
+
+    fun handleVoiceAudio(audioBytes: ByteArray, mimeType: String) {
+        if (audioBytes.isEmpty()) return
+        _voicePermissionDenied.value = false
+        _statusBanner.value = null
+
+        viewModelScope.launch {
+            _isTranslatingVoice.value = true
+            val profile = activeProfile.value
+            val modelName = profile?.aiModelName ?: "gemini-3.8-flash"
+            val preferredShell = profile?.preferredShell ?: "/bin/ash"
+
+            if (!_voiceAiTranslate.value) {
+                val res = aiRepository.transcribeAudio(
+                    audioBytes = audioBytes,
+                    mimeType = mimeType,
+                    modelName = modelName,
+                )
+                _isTranslatingVoice.value = false
+                res.onSuccess { transcript ->
+                    if (_voiceAutoExecute.value) {
+                        executeCommand(transcript)
+                    } else {
+                        injectVoiceInput(transcript)
+                    }
+                }.onFailure { err ->
+                    _statusBanner.value = err.localizedMessage ?: "Audio transcription failed."
+                }
+                return@launch
+            }
+
+            val result = aiRepository.audioToShellCommand(
+                audioBytes = audioBytes,
+                mimeType = mimeType,
+                currentDir = _currentDirDisplay.value,
+                preferredShell = preferredShell,
+                modelName = modelName,
+            )
+            _isTranslatingVoice.value = false
+            result.onSuccess { mapped ->
+                val note = if (mapped.explanation.isNotBlank()) " — ${mapped.explanation}" else ""
+                appendEntry(
+                    text = "Voice (Gemini Audio) -> \"${mapped.transcript}\" mapped to `${mapped.command}`$note",
+                    type = EntryType.AI_SUGGESTION
+                )
+                if (_voiceAutoExecute.value) {
+                    if (_voiceReadoutEnabled.value) {
+                        _voiceSpeakEvent.tryEmit("Running ${mapped.command}")
+                    }
+                    executeCommand(mapped.command)
+                } else {
+                    injectVoiceInput(mapped.command)
+                    if (_voiceReadoutEnabled.value) {
+                        _voiceSpeakEvent.tryEmit(
+                            mapped.explanation.ifBlank { "Command ready: ${mapped.command}" }
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                _statusBanner.value = err.localizedMessage ?: "Gemini Audio command translation failed."
             }
         }
     }
@@ -305,6 +425,9 @@ class TerminalMonitorViewModel(
                 _bottleneckState.value = UiState.Success(analysis)
                 if (isProactive && analysis.severity != "nominal") {
                     _proactiveAlert.value = analysis
+                    if (_voiceReadoutEnabled.value) {
+                        _voiceSpeakEvent.tryEmit("System alert in ${analysis.bottleneckArea}: ${analysis.summary}")
+                    }
                 }
             }.onFailure { err ->
                 if (!isProactive) {

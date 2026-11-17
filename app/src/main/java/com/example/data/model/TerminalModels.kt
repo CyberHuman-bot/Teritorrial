@@ -163,3 +163,9 @@ data class ChatMessage(
     val suggestedCommand: String? = null,
     val isError: Boolean = false,
 )
+
+data class VoiceCommandTranslation(
+    val transcript: String,
+    val command: String,
+    val explanation: String = "",
+)

@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -30,7 +34,9 @@ import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -57,6 +63,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -68,9 +75,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.CodeGenResult
 import com.example.data.model.DebugReport
@@ -90,6 +99,8 @@ import com.example.ui.theme.TerminalCodeStyle
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.VioletAccent
 import com.example.viewmodel.CodeStudioViewModel
+import com.example.voice.VoiceRecognizerController
+import com.example.voice.VoiceState
 import kotlinx.coroutines.launch
 
 @Composable
@@ -247,9 +258,47 @@ private fun GenerateTab(
     onDeployOnly: (CodeGenResult) -> Unit,
     onRunInTerminal: (CodeGenResult) -> Unit,
 ) {
+    val context = LocalContext.current
     val prompt by viewModel.genPrompt.collectAsStateWithLifecycle()
     val selectedLang by viewModel.selectedLanguage.collectAsStateWithLifecycle()
     val genState by viewModel.codeGenState.collectAsStateWithLifecycle()
+    val isTranscribing by viewModel.isTranscribingVoice.collectAsStateWithLifecycle()
+
+    val voiceController = remember(context) { VoiceRecognizerController(context) }
+    DisposableEffect(voiceController) { onDispose { voiceController.destroy() } }
+    val voiceState by voiceController.voiceState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(voiceState) {
+        when (val state = voiceState) {
+            is VoiceState.Result -> {
+                voiceController.resetState()
+                val joined = if (prompt.isBlank()) state.transcript else "$prompt ${state.transcript}"
+                viewModel.onGenPromptChanged(joined)
+            }
+            is VoiceState.AudioReady -> {
+                voiceController.resetState()
+                viewModel.transcribeVoiceAudio(state.audioBytes, state.mimeType, activeProfile) { text ->
+                    val joined = if (prompt.isBlank()) text else "$prompt $text"
+                    viewModel.onGenPromptChanged(joined)
+                }
+            }
+            is VoiceState.Error -> {
+                voiceController.resetState()
+                viewModel.showToast(state.message)
+            }
+            else -> Unit
+        }
+    }
+
+    val micLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            voiceController.startListening()
+        } else {
+            viewModel.showToast("Microphone permission is required for voice dictation.")
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -263,6 +312,37 @@ private fun GenerateTab(
             onValueChange = { viewModel.onGenPromptChanged(it) },
             label = { Text("Describe the script or code snippet") },
             placeholder = { Text("e.g., Monitor /var/log for errors and print a summary table in ash") },
+            trailingIcon = {
+                val isListening = voiceState is VoiceState.Listening
+                IconButton(
+                    onClick = {
+                        if (isListening) {
+                            voiceController.stopListening()
+                        } else if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            voiceController.startListening()
+                        } else {
+                            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("studio_voice_prompt_button"),
+                ) {
+                    if (isTranscribing) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = CyanElectric)
+                    } else {
+                        Icon(
+                            imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                            contentDescription = if (isListening) "Stop voice dictation" else "Dictate script description",
+                            tint = if (isListening) CrimsonError else CyanElectric,
+                        )
+                    }
+                }
+            },
             minLines = 3,
             maxLines = 5,
             colors = OutlinedTextFieldDefaults.colors(
@@ -680,10 +760,46 @@ private fun AiChatTab(
     viewModel: CodeStudioViewModel,
     activeProfile: TerminalProfile?,
 ) {
+    val context = LocalContext.current
     val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val isSending by viewModel.isChatSending.collectAsStateWithLifecycle()
+    val isTranscribing by viewModel.isTranscribingVoice.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    val voiceController = remember(context) { VoiceRecognizerController(context) }
+    DisposableEffect(voiceController) { onDispose { voiceController.destroy() } }
+    val voiceState by voiceController.voiceState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(voiceState) {
+        when (val state = voiceState) {
+            is VoiceState.Result -> {
+                voiceController.resetState()
+                input = if (input.isBlank()) state.transcript else "$input ${state.transcript}"
+            }
+            is VoiceState.AudioReady -> {
+                voiceController.resetState()
+                viewModel.transcribeVoiceAudio(state.audioBytes, state.mimeType, activeProfile) { text ->
+                    input = if (input.isBlank()) text else "$input $text"
+                }
+            }
+            is VoiceState.Error -> {
+                voiceController.resetState()
+                viewModel.showToast(state.message)
+            }
+            else -> Unit
+        }
+    }
+
+    val micLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            voiceController.startListening()
+        } else {
+            viewModel.showToast("Microphone permission is required for voice chat input.")
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -748,7 +864,7 @@ private fun AiChatTab(
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
-                    placeholder = { Text("Ask Alpaca AI about scripts or Linux...") },
+                    placeholder = { Text("Ask Alpaca AI or tap mic...") },
                     maxLines = 3,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = CyanElectric,
@@ -758,6 +874,39 @@ private fun AiChatTab(
                         .weight(1f)
                         .testTag("studio_chat_input"),
                 )
+                val isListening = voiceState is VoiceState.Listening
+                IconButton(
+                    onClick = {
+                        if (isListening) {
+                            voiceController.stopListening()
+                        } else if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            voiceController.startListening()
+                        } else {
+                            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            color = if (isListening) CrimsonError else ObsidianSurfaceVariant,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .testTag("studio_chat_voice_button"),
+                ) {
+                    if (isTranscribing) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = CyanElectric, strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                            contentDescription = if (isListening) "Stop voice input" else "Speak message",
+                            tint = if (isListening) ObsidianBg else CyanElectric,
+                        )
+                    }
+                }
                 IconButton(
                     onClick = {
                         val toSend = input

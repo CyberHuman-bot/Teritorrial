@@ -4,7 +4,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -179,7 +182,7 @@ private fun AuthenticatedShellHost(currentUserId: String) {
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                    .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime)),
             ) {
                 NavigationRail(
                     containerColor = ObsidianSurface,
@@ -222,7 +225,7 @@ private fun AuthenticatedShellHost(currentUserId: String) {
         } else {
             Scaffold(
                 containerColor = ObsidianBg,
-                contentWindowInsets = WindowInsets.safeDrawing,
+                contentWindowInsets = WindowInsets.safeDrawing.exclude(WindowInsets.ime),
                 bottomBar = {
                     NavigationBar(
                         containerColor = ObsidianSurface,
@@ -257,6 +260,7 @@ private fun AuthenticatedShellHost(currentUserId: String) {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
+                        .consumeWindowInsets(innerPadding)
                         .imePadding()
                 ) {
                     AppNavHost(

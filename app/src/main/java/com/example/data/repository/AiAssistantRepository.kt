@@ -9,6 +9,7 @@ import com.example.data.model.DebugIssue
 import com.example.data.model.DebugReport
 import com.example.data.model.OptimizationAction
 import com.example.data.model.SystemMetricsSnapshot
+import com.example.data.model.VoiceCommandTranslation
 import com.google.firebase.Firebase
 import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
@@ -143,6 +144,116 @@ class AiAssistantRepository {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Voice-to-shell failed", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun audioToShellCommand(
+        audioBytes: ByteArray,
+        mimeType: String,
+        currentDir: String,
+        preferredShell: String,
+        modelName: String,
+    ): Result<VoiceCommandTranslation> {
+        return try {
+            if (audioBytes.isEmpty()) {
+                return Result.failure(IllegalArgumentException("Recorded audio clip is empty."))
+            }
+            if (audioBytes.size > 15 * 1024 * 1024) {
+                return Result.failure(IllegalArgumentException("Audio clip exceeds 15MB limit."))
+            }
+            val schema = Schema.obj(
+                properties = mapOf(
+                    "transcript" to Schema.string("Exact verbatim transcription of the user's spoken audio"),
+                    "command" to Schema.string("Single valid executable Alpaca Linux shell command"),
+                    "explanation" to Schema.string("Brief 1-sentence summary of what the command does"),
+                )
+            )
+            val model = getStructuredModel(
+                modelName = modelName,
+                temperature = 0.2f,
+                schema = schema,
+                systemPrompt = "You are a voice-driven Alpaca Linux ($preferredShell) terminal assistant. Transcribe the user's spoken audio accurately and map their intent to a single safe POSIX/BusyBox/apk shell command."
+            )
+            val prompt = content {
+                inlineData(audioBytes, mimeType)
+                text(
+                    "Current working directory: $currentDir. " +
+                        "Transcribe what was spoken and return the exact Alpaca Linux ($preferredShell) shell command."
+                )
+            }
+            val response = withTimeout(45_000L) {
+                model.generateContent(prompt)
+            }
+            val raw = response.text ?: throw IllegalStateException("Empty audio translation response.")
+            val json = JSONObject(raw)
+            val transcript = json.optString("transcript").trim()
+            val command = json.optString("command").trim()
+            val explanation = json.optString("explanation").trim()
+            if (command.isEmpty()) {
+                Result.failure(IllegalStateException("Could not determine a shell command from the recording."))
+            } else {
+                Result.success(
+                    VoiceCommandTranslation(
+                        transcript = transcript.ifEmpty { command },
+                        command = command,
+                        explanation = explanation,
+                    )
+                )
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Audio-to-shell timed out", e)
+            Result.failure(Exception("Voice audio processing timed out after 45s."))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio-to-shell failed", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun transcribeAudio(
+        audioBytes: ByteArray,
+        mimeType: String,
+        modelName: String,
+    ): Result<String> {
+        return try {
+            if (audioBytes.isEmpty()) {
+                return Result.failure(IllegalArgumentException("Recorded audio clip is empty."))
+            }
+            val schema = Schema.obj(
+                properties = mapOf(
+                    "transcript" to Schema.string("Verbatim transcription of the spoken audio"),
+                )
+            )
+            val model = getStructuredModel(
+                modelName = modelName,
+                temperature = 0.1f,
+                schema = schema,
+                systemPrompt = "Transcribe the user's spoken prompt verbatim with accurate technical Linux/programming terminology."
+            )
+            val response = withTimeout(45_000L) {
+                model.generateContent(
+                    content {
+                        inlineData(audioBytes, mimeType)
+                        text("Transcribe this voice prompt verbatim.")
+                    }
+                )
+            }
+            val raw = response.text ?: throw IllegalStateException("Empty audio transcription response.")
+            val transcript = JSONObject(raw).optString("transcript").trim()
+            if (transcript.isEmpty()) {
+                Result.failure(IllegalStateException("No speech detected in audio recording."))
+            } else {
+                Result.success(transcript)
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Audio transcription timed out", e)
+            Result.failure(Exception("Audio transcription timed out."))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio transcription failed", e)
             Result.failure(e)
         }
     }

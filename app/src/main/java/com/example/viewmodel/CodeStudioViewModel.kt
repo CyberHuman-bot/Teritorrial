@@ -88,6 +88,9 @@ class CodeStudioViewModel(
     private val _workspaceFiles = MutableStateFlow<List<String>>(emptyList())
     val workspaceFiles: StateFlow<List<String>> = _workspaceFiles.asStateFlow()
 
+    private val _isTranscribingVoice = MutableStateFlow(false)
+    val isTranscribingVoice: StateFlow<Boolean> = _isTranscribingVoice.asStateFlow()
+
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
@@ -129,6 +132,31 @@ class CodeStudioViewModel(
 
     fun clearToast() {
         _toastMessage.value = null
+    }
+
+    fun showToast(message: String) {
+        _toastMessage.value = message
+    }
+
+    fun transcribeVoiceAudio(
+        audioBytes: ByteArray,
+        mimeType: String,
+        profile: TerminalProfile?,
+        onTranscript: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            _isTranscribingVoice.value = true
+            val result = aiRepository.transcribeAudio(
+                audioBytes = audioBytes,
+                mimeType = mimeType,
+                modelName = profile?.aiModelName ?: "gemini-3.8-flash",
+            )
+            _isTranscribingVoice.value = false
+            result.onSuccess(onTranscript)
+                .onFailure { err ->
+                    _toastMessage.value = err.localizedMessage ?: "Voice transcription failed."
+                }
+        }
     }
 
     fun generateScript(profile: TerminalProfile?) {

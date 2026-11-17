@@ -1,11 +1,17 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -34,12 +40,17 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -63,20 +74,40 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.data.model.AiSuggestion
 import com.example.data.model.BottleneckAnalysis
 import com.example.data.model.EntryType
@@ -100,8 +131,10 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.VioletAccent
 import com.example.viewmodel.TerminalMonitorViewModel
+import com.example.voice.VoiceEngineMode
 import com.example.voice.VoiceRecognizerController
 import com.example.voice.VoiceState
+import kotlin.math.sin
 
 @Composable
 fun TerminalScreen(
@@ -123,15 +156,31 @@ fun TerminalScreen(
     val suggestionsState by viewModel.suggestionsState.collectAsStateWithLifecycle()
     val proactiveAlert by viewModel.proactiveAlert.collectAsStateWithLifecycle()
     val voiceAiTranslate by viewModel.voiceAiTranslate.collectAsStateWithLifecycle()
+    val voiceAutoExecute by viewModel.voiceAutoExecute.collectAsStateWithLifecycle()
+    val voiceReadoutEnabled by viewModel.voiceReadoutEnabled.collectAsStateWithLifecycle()
     val isTranslatingVoice by viewModel.isTranslatingVoice.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
+    val voicePermissionDenied by viewModel.voicePermissionDenied.collectAsStateWithLifecycle()
     val voiceState by voiceController.voiceState.collectAsStateWithLifecycle()
+    val voiceEngineMode by voiceController.engineMode.collectAsStateWithLifecycle()
 
     LaunchedEffect(voiceState) {
-        if (voiceState is VoiceState.Result) {
-            val transcript = (voiceState as VoiceState.Result).transcript
-            voiceController.resetState()
-            viewModel.handleVoiceTranscript(transcript)
+        when (val state = voiceState) {
+            is VoiceState.Result -> {
+                voiceController.resetState()
+                viewModel.handleVoiceTranscript(state.transcript)
+            }
+            is VoiceState.AudioReady -> {
+                voiceController.resetState()
+                viewModel.handleVoiceAudio(state.audioBytes, state.mimeType)
+            }
+            else -> Unit
+        }
+    }
+
+    LaunchedEffect(voiceController) {
+        viewModel.voiceSpeakEvent.collect { spoken ->
+            voiceController.speak(spoken)
         }
     }
 
@@ -139,9 +188,10 @@ fun TerminalScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
+            viewModel.clearStatusBanner()
             voiceController.startListening()
         } else {
-            viewModel.onInputChanged(inputText)
+            viewModel.setVoicePermissionDeniedError()
         }
     }
 
@@ -161,6 +211,13 @@ fun TerminalScreen(
             activeProfile = activeProfile,
             currentDir = currentDir,
             metrics = metrics,
+            voiceReadoutEnabled = voiceReadoutEnabled,
+            onToggleVoiceReadout = {
+                viewModel.toggleVoiceReadout()
+                if (voiceReadoutEnabled) {
+                    voiceController.stopSpeaking()
+                }
+            },
             onClearTerminal = { viewModel.executeCommand("clear") },
             onOpenMonitor = onNavigateToMonitor,
         )
@@ -199,6 +256,24 @@ fun TerminalScreen(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.weight(1f),
                     )
+                    if (voicePermissionDenied) {
+                        TextButton(
+                            onClick = {
+                                val intent = Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.fromParts("package", context.packageName, null)
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.testTag("voice_open_settings_button"),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.voice_open_settings),
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = {
                             voiceController.resetState()
@@ -236,12 +311,13 @@ fun TerminalScreen(
             }
         }
 
-        // Live Voice Listening Indicator
+        // Live Voice Listening & Waveform Indicator
         AnimatedVisibility(visible = voiceState is VoiceState.Listening || isTranslatingVoice) {
             VoiceStatusStrip(
                 voiceState = voiceState,
                 isTranslating = isTranslatingVoice,
-                onStop = { voiceController.stopListening() },
+                onCancel = { voiceController.cancelListening() },
+                onDone = { voiceController.stopListening() },
             )
         }
 
@@ -254,10 +330,14 @@ fun TerminalScreen(
             },
         )
 
-        // Quick Linux Builtin Chips + History Arrows
+        // Voice Controls + Quick Linux Builtin Chips + History Arrows
         QuickActionRow(
             voiceAiTranslate = voiceAiTranslate,
+            voiceAutoExecute = voiceAutoExecute,
+            voiceEngineMode = voiceEngineMode,
             onToggleVoiceAi = { viewModel.toggleVoiceAiTranslate() },
+            onToggleVoiceAutoExecute = { viewModel.toggleVoiceAutoExecute() },
+            onCycleVoiceEngine = { voiceController.cycleEngineMode() },
             onHistoryUp = { viewModel.cycleHistory(up = true) },
             onHistoryDown = { viewModel.cycleHistory(up = false) },
             onQuickCommand = { cmd -> viewModel.executeCommand(cmd) },
@@ -294,6 +374,8 @@ private fun TerminalHeaderBar(
     activeProfile: TerminalProfile?,
     currentDir: String,
     metrics: SystemMetricsSnapshot,
+    voiceReadoutEnabled: Boolean,
+    onToggleVoiceReadout: () -> Unit,
     onClearTerminal: () -> Unit,
     onOpenMonitor: () -> Unit,
 ) {
@@ -348,7 +430,7 @@ private fun TerminalHeaderBar(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Surface(
                     color = ObsidianSurfaceVariant,
@@ -375,6 +457,23 @@ private fun TerminalHeaderBar(
                             color = if (metrics.memPercent >= (activeProfile?.memAlertThreshold ?: 80L)) AmberAlert else MintEmerald,
                         )
                     }
+                }
+
+                IconButton(
+                    onClick = onToggleVoiceReadout,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("voice_readout_toggle_button"),
+                ) {
+                    Icon(
+                        imageVector = if (voiceReadoutEnabled) {
+                            Icons.AutoMirrored.Rounded.VolumeUp
+                        } else {
+                            Icons.AutoMirrored.Rounded.VolumeOff
+                        },
+                        contentDescription = if (voiceReadoutEnabled) "Disable voice readout" else "Enable voice readout",
+                        tint = if (voiceReadoutEnabled) CyanElectric else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 IconButton(
@@ -539,55 +638,166 @@ private fun TerminalEntryRow(entry: TerminalEntry) {
 private fun VoiceStatusStrip(
     voiceState: VoiceState,
     isTranslating: Boolean,
-    onStop: () -> Unit,
+    onCancel: () -> Unit,
+    onDone: () -> Unit,
 ) {
     val listening = voiceState as? VoiceState.Listening
+    val animatedLevel by animateFloatAsState(
+        targetValue = ((listening?.rmsDb ?: 2f) / 12f).coerceIn(0.12f, 1f),
+        animationSpec = tween(durationMillis = 120),
+        label = "voice_rms_level",
+    )
+
     Surface(
         color = CyanElectric.copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, CyanElectric.copy(alpha = 0.4f)),
+        border = BorderStroke(1.dp, CyanElectric.copy(alpha = 0.45f)),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .testTag("voice_status_strip"),
+        shape = RoundedCornerShape(14.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    text = if (isTranslating) {
-                        "Gemini AI translating voice to shell command..."
-                    } else {
-                        val preview = listening?.partialText.orEmpty()
-                        if (preview.isBlank()) "Listening... speak a command or intent" else "\"$preview\""
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CyanElectric,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f),
-                )
+                ) {
+                    Surface(
+                        color = if (listening?.isAudioCapture == true) {
+                            VioletAccent.copy(alpha = 0.25f)
+                        } else {
+                            MintEmerald.copy(alpha = 0.22f)
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(
+                            text = when {
+                                isTranslating -> "Gemini AI"
+                                listening?.isAudioCapture == true -> "Gemini Audio"
+                                else -> "Live Speech"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (listening?.isAudioCapture == true) Color(0xFFD6BCFA) else MintEmerald,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                    if (listening != null) {
+                        val mins = listening.elapsedSeconds / 60
+                        val secs = listening.elapsedSeconds % 60
+                        Text(
+                            text = String.format("%d:%02d", mins, secs),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = JetBrainsMonoFontFamily
+                            ),
+                            color = CyanElectric,
+                        )
+                    }
+                }
+
                 if (listening != null) {
-                    TextButton(onClick = onStop) {
-                        Text("Stop", color = CrimsonError)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        IconButton(
+                            onClick = onCancel,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("voice_cancel_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Cancel voice recording",
+                                tint = CrimsonError,
+                            )
+                        }
+                        Surface(
+                            color = MintEmerald,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .heightIn(min = 40.dp)
+                                .clickable { onDone() }
+                                .testTag("voice_done_button"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = "Finish and process voice command",
+                                    tint = ObsidianBg,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text(
+                                    text = "Done",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = ObsidianBg,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
                     }
                 }
             }
+
+            Text(
+                text = when {
+                    isTranslating -> stringResource(R.string.voice_translating)
+                    listening?.isAudioCapture == true -> stringResource(R.string.voice_listening_audio)
+                    else -> {
+                        val preview = listening?.partialText.orEmpty()
+                        if (preview.isBlank()) {
+                            stringResource(R.string.voice_listening_speech)
+                        } else {
+                            "\"$preview\""
+                        }
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary,
+            )
+
             if (isTranslating) {
                 LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     color = CyanElectric,
+                    trackColor = ObsidianSurfaceVariant,
                 )
             } else if (listening != null) {
-                LinearProgressIndicator(
-                    progress = { (listening.rmsDb / 10f).coerceIn(0.1f, 1f) },
+                Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    color = MintEmerald,
-                )
+                        .height(24.dp),
+                ) {
+                    val barCount = 24
+                    val gap = size.width / (barCount * 2f)
+                    val barWidth = gap
+                    val centerY = size.height / 2f
+                    for (i in 0 until barCount) {
+                        val wave = (0.35f + 0.65f * kotlin.math.abs(
+                            sin((i * 0.6f) + (listening.elapsedSeconds * 1.4f) + (animatedLevel * 5f))
+                        ))
+                        val barHeight = (size.height * animatedLevel * wave).coerceAtLeast(4.dp.toPx())
+                        val x = i * (barWidth + gap) + gap / 2f
+                        drawRoundRect(
+                            color = if (i % 2 == 0) CyanElectric else MintEmerald,
+                            topLeft = Offset(x, centerY - barHeight / 2f),
+                            size = Size(barWidth, barHeight),
+                            cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                        )
+                    }
+                }
             }
         }
     }
@@ -726,7 +936,11 @@ private fun AiSuggestionsStrip(
 @Composable
 private fun QuickActionRow(
     voiceAiTranslate: Boolean,
+    voiceAutoExecute: Boolean,
+    voiceEngineMode: VoiceEngineMode,
     onToggleVoiceAi: () -> Unit,
+    onToggleVoiceAutoExecute: () -> Unit,
+    onCycleVoiceEngine: () -> Unit,
     onHistoryUp: () -> Unit,
     onHistoryDown: () -> Unit,
     onQuickCommand: (String) -> Unit,
@@ -743,17 +957,66 @@ private fun QuickActionRow(
         FilterChip(
             selected = voiceAiTranslate,
             onClick = onToggleVoiceAi,
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                )
+            },
             label = { Text("Voice→AI Shell", style = MaterialTheme.typography.labelSmall) },
             colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = VioletAccent.copy(alpha = 0.25f),
                 selectedLabelColor = Color(0xFFD6BCFA),
+                selectedLeadingIconColor = Color(0xFFD6BCFA),
             ),
             modifier = Modifier.testTag("voice_ai_toggle_chip"),
+        )
+        FilterChip(
+            selected = voiceAutoExecute,
+            onClick = onToggleVoiceAutoExecute,
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Rounded.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                )
+            },
+            label = { Text("Auto-Run", style = MaterialTheme.typography.labelSmall) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MintEmerald.copy(alpha = 0.22f),
+                selectedLabelColor = MintEmerald,
+                selectedLeadingIconColor = MintEmerald,
+            ),
+            modifier = Modifier.testTag("voice_auto_run_chip"),
+        )
+        AssistChip(
+            onClick = onCycleVoiceEngine,
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Rounded.GraphicEq,
+                    contentDescription = null,
+                    tint = CyanElectric,
+                    modifier = Modifier.size(14.dp),
+                )
+            },
+            label = {
+                Text(
+                    text = "Mic: ${voiceEngineMode.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = ObsidianSurfaceVariant,
+                labelColor = CyanElectric,
+            ),
+            border = BorderStroke(1.dp, CyanElectric.copy(alpha = 0.45f)),
+            modifier = Modifier.testTag("voice_engine_mode_chip"),
         )
         IconButton(
             onClick = onHistoryUp,
             modifier = Modifier
-                .size(40.dp)
+                .minimumInteractiveComponentSize()
                 .testTag("history_up_button"),
         ) {
             Icon(
@@ -765,7 +1028,7 @@ private fun QuickActionRow(
         IconButton(
             onClick = onHistoryDown,
             modifier = Modifier
-                .size(40.dp)
+                .minimumInteractiveComponentSize()
                 .testTag("history_down_button"),
         ) {
             Icon(
@@ -802,6 +1065,28 @@ private fun TerminalCommandBar(
     onExecute: () -> Unit,
     onMicClick: () -> Unit,
 ) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var isFocused by remember { mutableStateOf(false) }
+
+    var textFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        )
+    }
+
+    LaunchedEffect(inputText) {
+        if (inputText != textFieldValue.text) {
+            textFieldValue = TextFieldValue(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        }
+    }
+
     Surface(
         color = ObsidianSurfaceHigh,
         border = BorderStroke(1.dp, ObsidianOutline),
@@ -814,36 +1099,88 @@ private fun TerminalCommandBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = promptSymbol,
-                style = MaterialTheme.typography.labelMedium,
-                color = MintEmerald,
-            )
-            Box(
+            Surface(
+                color = ObsidianBg,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isFocused) CyanElectric else ObsidianOutline,
+                ),
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 42.dp),
-                contentAlignment = Alignment.CenterStart,
+                    .heightIn(min = 48.dp)
+                    .clickable {
+                        focusRequester.requestFocus()
+                        keyboardController?.show()
+                    },
             ) {
-                if (inputText.isEmpty()) {
-                    Text(
-                        text = "Enter shell command or tap mic...",
-                        style = TerminalOutputStyle,
-                        color = TextMuted,
-                    )
-                }
-                BasicTextField(
-                    value = inputText,
-                    onValueChange = onInputChanged,
-                    singleLine = true,
-                    textStyle = TerminalOutputStyle.copy(color = TextPrimary),
-                    cursorBrush = SolidColor(CyanElectric),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onExecute() }),
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("terminal_command_input"),
-                )
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = promptSymbol,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MintEmerald,
+                    )
+                    BasicTextField(
+                        value = textFieldValue,
+                        onValueChange = { updated ->
+                            textFieldValue = updated
+                            if (updated.text != inputText) {
+                                onInputChanged(updated.text)
+                            }
+                        },
+                        singleLine = true,
+                        textStyle = TerminalOutputStyle.copy(color = TextPrimary),
+                        cursorBrush = SolidColor(CyanElectric),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            autoCorrectEnabled = false,
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Send,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onSend = { onExecute() },
+                            onDone = { onExecute() },
+                        ),
+                        decorationBox = { innerTextField ->
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                if (textFieldValue.text.isEmpty()) {
+                                    Text(
+                                        text = "Type command or tap mic...",
+                                        style = TerminalOutputStyle,
+                                        color = TextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester)
+                            .onFocusChanged { isFocused = it.isFocused }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyUp &&
+                                    (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                ) {
+                                    onExecute()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            .testTag("terminal_command_input"),
+                    )
+                }
             }
             IconButton(
                 onClick = onMicClick,
